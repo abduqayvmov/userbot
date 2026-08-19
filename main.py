@@ -307,22 +307,54 @@ async def translate_message(event):
 async def spam_worker(chat_id, target):
     """Foydalanuvchini cheksiz chaqirib turuvchi ichki funksiya."""
     try:
-        while True:
-            # Agar target faqat raqamlardan iborat bo'lsa (User ID bo'lsa)
-            if target.isdigit():
-                # Foydalanuvchini ID si orqali bosiladigan havola (mention) qilish
+        # Agar target faqat raqamlardan iborat bo'lsa (User ID bo'lsa)
+        if target.isdigit():
+            try:
+                # Telegram obyektini keshga olish (ID orqali odamni topish)
+                user_entity = await client.get_entity(int(target))
+                mention_text = f'<a href="tg://user?id={target}">{user_entity.first_name}</a> keling!'
+            except Exception:
+                # Agar foydalanuvchi keshda mutlaqo topilmasa, oddiy text havola
                 mention_text = f'<a href="tg://user?id={target}">Foydalanuvchi</a> chaqirilmoqda!'
-                await client.send_message(chat_id, mention_text, parse_mode="html")
-            else:
-                # Agar username bo'lsa (masalan @username)
-                await client.send_message(chat_id, f"{target} ")
-            
+        else:
+            # Agar username bo'lsa (masalan @username)
+            mention_text = f"{target} keling!"
+
+        while True:
+            # Xabarni HTML formatida yuborish
+            await client.send_message(chat_id, mention_text, parse_mode="html")
             # Telegram chekloviga tushmaslik uchun 1.5 soniya kutish
             await asyncio.sleep(1.5)
+            
     except asyncio.CancelledError:
         pass  # Vazifa bekor qilinganda xatolik bermaydi
     except Exception as e:
         print(f"Spam xatolik: {e}")
+
+
+@client.on(events.NewMessage(pattern=r"^\.u(?:\s+(.+))?$", outgoing=True))
+async def start_infinite_mention(event):
+    chat_id = event.chat_id
+    target = event.pattern_match.group(1)
+
+    # Agar reply qilingan bo'lsa va matn kiritilmagan bo'lsa, o'sha odamning ID sini olish
+    if not target and event.is_reply:
+        reply = await event.get_reply_message()
+        if reply and getattr(reply, "sender_id", None):
+            target = str(reply.sender_id)
+
+    if not target:
+        return await event.edit("Foydalanuvchini kiriting: `.u @username` yoki `.u user_id` yoki xabarga reply qiling.")
+
+    # Agar ushbu chatda allaqachon spam faol bo'lsa, uni to'xtatish
+    if chat_id in active_spams:
+        active_spams[chat_id].cancel()
+
+    await event.delete()
+    
+    # Yangi cheksiz vazifani ishga tushirish va ro'yxatga saqlash
+    task = asyncio.create_task(spam_worker(chat_id, target))
+    active_spams[chat_id] = task
 
 
 fake_server = Flask(__name__)
