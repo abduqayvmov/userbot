@@ -336,7 +336,7 @@ async def start_infinite_mention(event):
     try:
         while active_spams.get(chat_id, False):
             await client.send_message(chat_id, mention_text, parse_mode="html")
-            await asyncio.sleep(1.5)  # Telegram bloklamasligi uchun cheklov
+            await asyncio.sleep(0.5)  # Telegram bloklamasligi uchun cheklov
     except Exception as e:
         print(f"Spam xatolik: {e}")
 
