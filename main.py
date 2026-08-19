@@ -1,13 +1,19 @@
 import os
 import asyncio
 import threading
-from flask import Flask
 import requests
 from io import BytesIO
 from datetime import datetime
+from flask import Flask
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
+from telethon.tl.functions.account import UpdateStatusRequest, SetPrivacyRequest
+from telethon.tl.types import (
+    InputPrivacyKeyStatusTimestamp,
+    InputPrivacyValueDisallowAll,
+    InputPrivacyValueAllowAll,
+)
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -18,6 +24,12 @@ TARGET_LANG = "uz"
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 user_tags = {}
+sharpa_enabled = {"on": False}
+
+
+def mention_html(name, user_id):
+    safe_name = (name or "Noma'lum").replace("<", "").replace(">", "")
+    return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
 
 def is_media_message(message):
@@ -80,9 +92,11 @@ async def on_message_deleted(event):
             continue
         sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
         sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
+        sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
+
         caption = (
             f"O'chirilgan shaxsiy xabar\n"
-            f"Kimdan: {sender_name} ({data['sender_id']})\n"
+            f"Kimdan: {sender_link}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {data['text'] or '(matn yoq)'}"
         )
@@ -91,10 +105,10 @@ async def on_message_deleted(event):
                 data["media_bio"].seek(0)
                 await client.send_file(
                     LOG_CHANNEL_ID, data["media_bio"], caption=caption,
-                    video_note=data["is_round"],
+                    video_note=data["is_round"], parse_mode="html",
                 )
             else:
-                await client.send_message(LOG_CHANNEL_ID, caption)
+                await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
         except Exception as e:
             print(f"Log kanalga yuborishda xatolik: {e}")
 
@@ -118,6 +132,7 @@ async def save_media_via_reply(event):
     try:
         sender = await reply.get_sender()
         sender_name = getattr(sender, "first_name", "Noma'lum")
+        sender_link = mention_html(sender_name, reply.sender_id)
         if is_round:
             kind = "Aylana video"
         elif is_voice:
@@ -128,13 +143,13 @@ async def save_media_via_reply(event):
             kind = "Video"
         else:
             kind = "Rasm"
-        caption = f"{kind} (reply orqali saqlandi)\nKimdan: {sender_name} ({reply.sender_id})"
+        caption = f"{kind} (reply orqali saqlandi)\nKimdan: {sender_link}"
         bio = await download_to_memory(reply)
         if not bio:
             print("Reply media: yuklab bolmadi (bo'sh)")
             return
         bio.seek(0)
-        await client.send_file(LOG_CHANNEL_ID, bio, caption=caption, video_note=is_round)
+        await client.send_file(LOG_CHANNEL_ID, bio, caption=caption, video_note=is_round, parse_mode="html")
     except Exception as e:
         print(f"Reply orqali media saqlashda xatolik: {e}")
 
@@ -182,49 +197,43 @@ async def remove_admin_tag(event):
 
 @client.on(events.NewMessage(pattern=r"^\.delete$", outgoing=True))
 async def delete_my_messages(event):
-    if event.is_private:
-        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
     chat = await event.get_chat()
     me = await client.get_me()
-    await event.edit("Ochirilyapti...")
-    deleted_count = 0
+
     ids_batch = []
     async for msg in client.iter_messages(chat, from_user=me.id):
         ids_batch.append(msg.id)
         if len(ids_batch) == 100:
             await client.delete_messages(chat, ids_batch)
-            deleted_count += len(ids_batch)
             ids_batch = []
             await asyncio.sleep(1)
+
     if ids_batch:
         await client.delete_messages(chat, ids_batch)
-        deleted_count += len(ids_batch)
+
     try:
-        await client.send_message(chat, f"{deleted_count} ta xabar ochirildi.")
+        await event.delete()
     except Exception:
         pass
 
 
-@client.on(events.NewMessage(pattern=r"^\.kurs$", outgoing=True))
-async def show_rates(event):
-    await event.edit("Kurs olinmoqda...")
+@client.on(events.NewMessage(pattern=r"^\.dell$", outgoing=True))
+async def delete_replied_message(event):
+    reply = await event.get_reply_message()
+    if not reply:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+        return
+
     try:
-        usd_resp = requests.get("https://cbu.uz/oz/arkhiv-kursov-valyut/json/USD/", timeout=10)
-        usd_rate = float(usd_resp.json()[0]["Rate"])
-        ton_resp = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd",
-            timeout=10,
-        )
-        ton_usd = ton_resp.json()["the-open-network"]["usd"]
-        ton_uzs = ton_usd * usd_rate
-        text = (
-            f"Kurs ({datetime.now().strftime('%d.%m.%Y %H:%M')})\n\n"
-            f"1$ - {usd_rate:,.0f} som\n"
-            f"1 TON - {ton_uzs:,.0f} som (${ton_usd:.2f})"
-        ).replace(",", " ")
-        await event.edit(text)
-    except Exception as e:
-        await event.edit(f"Kursni olib bolmadi: {e}")
+        await client.delete_messages(event.chat_id, [reply.id, event.id])
+    except Exception:
+        try:
+            await event.delete()
+        except Exception:
+            pass
 
 
 @client.on(events.NewMessage(pattern=r"^\.tarjima$", outgoing=True))
@@ -244,6 +253,43 @@ async def translate_message(event):
         await event.edit(f"Tarjima:\n{translated}")
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
+
+
+@client.on(events.NewMessage(pattern=r"^\.sharpa(?:\s+(yoq|off))?$", outgoing=True))
+async def toggle_sharpa(event):
+    mode = event.pattern_match.group(1)
+
+    if mode is None:
+        status = "yoqilgan" if sharpa_enabled["on"] else "ochirilgan"
+        return await event.edit(
+            f"Sharpa rejimi hozir: {status}\n\n"
+            f"Yoqish: .sharpa yoq\n"
+            f"Ochirish: .sharpa off"
+        )
+
+    try:
+        if mode == "yoq":
+            await client(SetPrivacyRequest(
+                key=InputPrivacyKeyStatusTimestamp(),
+                rules=[InputPrivacyValueDisallowAll()],
+            ))
+            await client(UpdateStatusRequest(offline=True))
+            sharpa_enabled["on"] = True
+            await event.edit(
+                "Sharpa rejimi yoqildi.\n"
+                "Onlayn holatingiz va oxirgi korilgan vaqtingiz endi hech kimga korinmaydi.\n\n"
+                "Eslatma: Telegram 'korildi' (read receipt) belgisini shaxsiy chatlarda "
+                "to'liq yashirish imkoniyatini bermaydi - bu platformaning ozi cheklovi."
+            )
+        else:
+            await client(SetPrivacyRequest(
+                key=InputPrivacyKeyStatusTimestamp(),
+                rules=[InputPrivacyValueAllowAll()],
+            ))
+            sharpa_enabled["on"] = False
+            await event.edit("Sharpa rejimi ochirildi. Onlayn holatingiz odatdagidek korinadi.")
+    except Exception as e:
+        await event.edit(f"Xatolik: {e}")
 
 
 fake_server = Flask(__name__)
