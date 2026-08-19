@@ -193,6 +193,7 @@ async def save_media_via_reply(event):
         else:
             kind = "Rasm"
         caption = f"{kind} (reply orqali saqlandi)\nKimdan: {sender_link}"
+        print(f"[DEBUG] Reply caption: {caption!r}")
         media_path = await download_to_disk(reply)
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
@@ -253,7 +254,7 @@ async def delete_my_messages(event):
     me = await client.get_me()
 
     ids_batch = []
-    async for msg in client.iter_messages(chat, from_user=me.id):
+    async for msg in client.iter_messages(chat, from_user=me.id, mark_read=False):
         ids_batch.append(msg.id)
         if len(ids_batch) == 100:
             await client.delete_messages(chat, ids_batch)
