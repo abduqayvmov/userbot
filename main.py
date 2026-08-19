@@ -23,9 +23,6 @@ client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 user_tags = {}
 
-# Chaqirish (spam) vazifalarini kuzatish uchun lug'at
-active_spams = {}
-
 
 def mention_html(name, user_id):
     safe_name = (name or "Noma'lum").replace("<", "").replace(">", "")
@@ -155,6 +152,7 @@ async def on_message_deleted(event):
             print(f"Log kanalga yuborishda xatolik: {e}")
 
 
+# Media reply orqali saqlash - endi shaxsiy chat, guruh va kanallarda ham ishlaydi
 @client.on(events.NewMessage(outgoing=True))
 async def save_media_via_reply(event):
     if not LOG_CHANNEL_ID:
@@ -240,10 +238,12 @@ async def remove_admin_tag(event):
         await event.edit(f"Xatolik: {e}")
 
 
+# .delete - o'zining barcha xabarlarini o'chiradi (guruh + shaxsiy), yakuniy xabarsiz
 @client.on(events.NewMessage(pattern=r"^\.delete$", outgoing=True))
 async def delete_my_messages(event):
     chat_id = event.chat_id
     me = await client.get_me()
+
     await event.delete()
 
     ids_batch = []
@@ -285,4 +285,44 @@ async def delete_replied_message(event):
 
 @client.on(events.NewMessage(pattern=r"^\.tarjima$", outgoing=True))
 async def translate_message(event):
+    reply = await event.get_reply_message()
+    if not reply or not reply.raw_text:
+        return await event.edit("Tarjima qilinadigan xabarga reply qiling.")
+    await event.edit("Tarjima qilinmoqda...")
+    try:
+        resp = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": TARGET_LANG, "dt": "t", "q": reply.raw_text},
+            timeout=10,
+        )
+        result = resp.json()
+        translated = "".join([seg[0] for seg in result[0]])
+        await event.edit(f"Tarjima:\n{translated}")
+    except Exception as e:
+        await event.edit(f"Tarjima xatoligi: {e}")
 
+
+fake_server = Flask(__name__)
+
+
+@fake_server.route("/")
+def home():
+    return "Bot ishlab turibdi."
+
+
+def run_fake_server():
+    port = int(os.getenv("PORT", 8080))
+    fake_server.run(host="0.0.0.0", port=port)
+
+
+async def main():
+    threading.Thread(target=run_fake_server, daemon=True).start()
+    asyncio.create_task(periodic_cleanup())
+    await client.start()
+    print("Userbot ishga tushdi.")
+    await client.run_until_disconnected()
+
+
+if __name__ == "__main__":
+    with client:
+        client.loop.run_until_complete(main())
