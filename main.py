@@ -457,7 +457,6 @@ async def main():
     await client.start()
     print("Userbot ishga tushdi.")
     await client.run_until_disconnected()
-    async def main():
     # ... mavjud kodingiz qatorlari ...
     asyncio.create_task(spy_monitor_worker()) # Buni qo'shing
     await client.start()
