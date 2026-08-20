@@ -7,9 +7,6 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
-import json
-from telethon.tl.functions.users import GetFullUserRequest
-
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -25,30 +22,6 @@ CACHE_MAX_ENTRIES = 3000
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 user_tags = {}
-
-# Kuzatuv ma'lumotlarini saqlash uchun fayl
-WATCH_FILE = "watched_users.json"
-
-# Kuzatuv ro'yxatini yuklash
-def load_watched_users():
-    if os.path.exists(WATCH_FILE):
-        try:
-            with open(WATCH_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-# Kuzatuv ro'yxatini saqlash
-def save_watched_users(data):
-    try:
-        with open(WATCH_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Faylga saqlashda xatolik: {e}")
-
-watched_users = load_watched_users()
-
 
 
 def mention_html(name, user_id):
@@ -328,115 +301,6 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
-# --- KUZATUV BUYRUKLARI ---
-@client.on(events.NewMessage(pattern=r"^\.kuzat(?:\s+(.+))?$", outgoing=True))
-async def add_to_spy(event):
-    target = event.pattern_match.group(1)
-    
-    if not target and event.is_reply:
-        reply = await event.get_reply_message()
-        if reply and getattr(reply, "sender_id", None):
-            target = str(reply.sender_id)
-
-    if not target:
-        return await event.edit("Foydalanuvchini kiriting: `.kuzat @username` yoki `.kuzat user_id` yoki reply qiling.")
-
-    await event.edit("Foydalanuvchi ma'lumotlari tekshirilmoqda...")
-    try:
-        user_entity = await client.get_entity(int(target) if target.isdigit() else target)
-        full_user = await client(GetFullUserRequest(user_entity.id))
-        
-        user_id_str = str(user_entity.id)
-        watched_users[user_id_str] = {
-            "first_name": user_entity.first_name or "",
-            "last_name": user_entity.last_name or "",
-            "username": user_entity.username or "",
-            "bio": full_user.full_user.about or "",
-            "photo_id": str(user_entity.photo.photo_id) if user_entity.photo else "yoq"
-        }
-        save_watched_users(watched_users)
-        await event.edit(f"🎯 {mention_html(user_entity.first_name, user_entity.id)} **kuzatuv ro'yxatiga qo'shildi!**\nProfil rasmi, ismi, username va biosi o'zgarganda bildirishnoma yuboriladi.", parse_mode="html")
-    except Exception as e:
-        await event.edit(f"Xatolik: Foydalanuvchi topilmadi. ({e})")
-
-
-@client.on(events.NewMessage(pattern=r"^\.kuzatuvlar$", outgoing=True))
-async def list_spy(event):
-    if not watched_users:
-        return await event.edit("Hozirda hech kim kuzatilmayapti.")
-    
-    text = "🎯 **Kuzatuv ostidagi foydalanuvchilar:**\n\n"
-    for uid, data in watched_users.items():
-        text += f"👤 {data['first_name']} — (ID: `{uid}`) [@{data['username'] or 'username_yoq'}]\n"
-    await event.edit(text)
-
-
-@client.on(events.NewMessage(pattern=r"^\.unkuzat\s+(.+)$", outgoing=True))
-async def remove_spy(event):
-    target = event.pattern_match.group(1).strip()
-    if target in watched_users:
-        del watched_users[target]
-        save_watched_users(watched_users)
-        await event.edit(f"❌ ID: `{target}` kuzatuv ro'yxatidan olib tashlandi.")
-    else:
-        await event.edit("Bu ID kuzatuv ro'yxatida topilmadi. Olib tashlash uchun aniq ID raqamini yozing.")
-
-
-# --- AVTOMATIK KUZATISH TIZIMI (BACKGROUND MONITOR) ---
-async def spy_monitor_worker():
-    """Har 5 daqiqada belgilangan foydalanuvchilar profilini tekshiradi."""
-    await client.connected()
-    while True:
-        await asyncio.sleep(60) # 1 daqiqa kutiladi
-        global watched_users
-        watched_users = load_watched_users()
-        
-        for user_id_str, old_data in list(watched_users.items()):
-            try:
-                user_id = int(user_id_str)
-                full_user = await client(GetFullUserRequest(user_id))
-                user = full_user.users
-                
-                current_first_name = user.first_name or ""
-                current_last_name = user.last_name or ""
-                current_username = user.username or ""
-                current_bio = full_user.full_user.about or ""
-                current_photo_id = str(user.photo.photo_id) if user.photo else "yoq"
-                
-                changes = []
-                
-                if old_data.get("first_name") != current_first_name or old_data.get("last_name") != current_last_name:
-                    changes.append(f"📝 **Ism o'zgardi:**\nEski: `{old_data.get('first_name')} {old_data.get('last_name')}`\nYangi: `{current_first_name} {current_last_name}`")
-                
-                if old_data.get("username") != current_username:
-                    changes.append(f"🔗 **Username o'zgardi:**\nEski: @{old_data.get('username') or 'yoq'}\nYangi: @{current_username or 'yoq'}")
-                
-                if old_data.get("bio") != current_bio:
-                    changes.append(f"ℹ️ **Bio (Tarjimai hol) o'zgardi:**\nEski: `{old_data.get('bio') or 'bosh'}`\nYangi: `{current_bio or 'bosh'}`")
-                
-                if old_data.get("photo_id") != current_photo_id:
-                    changes.append(f"🖼 **Profil rasmi o'zgartirildi!**")
-                
-                if changes:
-                    msg_text = f"🔔 **KUZATUV BILDIRISHNOMASI**\nFoydalanuvchi: {mention_html(current_first_name, user_id)} (ID: `{user_id}`)\n\n" + "\n\n".join(changes)
-                    
-                    if LOG_CHANNEL_ID:
-                        await client.send_message(LOG_CHANNEL_ID, msg_text, parse_mode="html")
-                    else:
-                        await client.send_message("me", msg_text, parse_mode="html")
-                    
-                    watched_users[user_id_str] = {
-                        "first_name": current_first_name,
-                        "last_name": current_last_name,
-                        "username": current_username,
-                        "bio": current_bio,
-                        "photo_id": current_photo_id
-                    }
-                    save_watched_users(watched_users)
-                    
-            except Exception as e:
-                print(f"Kuzatishda xatolik ({user_id_str}): {e}")
-
 
 fake_server = Flask(__name__)
 
@@ -457,11 +321,6 @@ async def main():
     await client.start()
     print("Userbot ishga tushdi.")
     await client.run_until_disconnected()
-    # ... mavjud kodingiz qatorlari ...
-    asyncio.create_task(spy_monitor_worker()) # Buni qo'shing
-    await client.start()
-    # ... rest of main ...
-
 
 
 if __name__ == "__main__":
