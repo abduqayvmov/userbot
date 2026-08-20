@@ -4,7 +4,7 @@ import asyncio
 import threading
 import requests
 from flask import Flask
-from telethon import TelegramClient, events, functions
+from telethon import TelegramClient, events, functions, types
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
 
@@ -286,5 +286,3 @@ async def delete_replied_message(event):
 async def translate_message(event):
     reply = await event.get_reply_message()
     if not reply or not reply.raw_text:
-        return await event.edit("Tarjima qilinadigan xabarga reply qiling.")
-
