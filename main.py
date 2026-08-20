@@ -301,6 +301,61 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
+# --- AI (SUN'IY INTELLEKT) FUNKSIYASI ---
+@client.on(events.NewMessage(pattern=r"^\.ai\s+(.+)$", outgoing=True))
+async def ai_assistant(event):
+    # Foydalanuvchi yozgan savolni ajratib olish
+    prompt = event.pattern_match.group(1).strip()
+    await event.edit("🤖 *O'ylanmoqda...*")
+    
+    try:
+        # Bepul DuckDuckGo AI modeliga so'rov yuborish
+        url = "https://duckduckgo.com"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "text/event-stream",
+            "x-vqd-4": "1" # Bepul sessiya identifikatori
+        }
+        
+        # Sun'iy intellekt uchun tizim buyrug'i (System prompt)
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "Siz Telegram'da ishlaydigan aqlli yordamchisiz. Har doim o'zbek tilida, qisqa va lo'nda javob bering."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        # So'rov yuborish (Sinxron requests'ni asyncio orqali xavfsiz chaqirish)
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: requests.post(url, json=payload, headers=headers, timeout=15)
+        )
+        
+        if response.status_code == 200:
+            # Kelgan ma'lumotni tozalash va matn ko'rinishiga keltirish
+            raw_text = response.text
+            # Oddiy javob matnini ajratib olish logikasi
+            ai_response = ""
+            for line in raw_text.split("\n"):
+                if line.startswith("data:"):
+                    try:
+                        data_json = json.loads(line[5:])
+                        if "message" in data_json:
+                            ai_response += data_json["message"]
+                    except Exception:
+                        pass
+            
+            if ai_response:
+                await event.edit(f"🤖 **AI javobi:**\n\n{ai_response.strip()}")
+            else:
+                await event.edit("❌ Javobni formatlashda xatolik yuz berdi.")
+        else:
+            await event.edit("❌ AI serveri vaqtincha javob bermayapti.")
+            
+    except Exception as e:
+        await event.edit(f"❌ AI xatoligi: {e}")
+
 
 fake_server = Flask(__name__)
 
