@@ -4,7 +4,7 @@ import asyncio
 import threading
 import requests
 from flask import Flask
-from telethon import TelegramClient, events, functions, types
+from telethon import TelegramClient, events
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
 
@@ -22,11 +22,6 @@ CACHE_MAX_ENTRIES = 3000
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 user_tags = {}
-# Chaqirish (spam) vazifalarini kuzatish uchun lug'at
-active_spams = {}
-
-# Sharpa rejimi holatini saqlash (Boshida o'chiq bo'ladi)
-ghost_mode = False
 
 
 def mention_html(name, user_id):
@@ -305,95 +300,6 @@ async def translate_message(event):
         await event.edit(f"Tarjima:\n{translated}")
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
-
-async def spam_worker(chat_id, target):
-    """Foydalanuvchini cheksiz chaqirib turuvchi ichki funksiya."""
-    try:
-        # Agar target faqat raqamlardan iborat bo'lsa (User ID bo'lsa)
-        if target.isdigit():
-            try:
-                # Telegram obyektini keshga olish (ID orqali odamni topish)
-                user_entity = await client.get_entity(int(target))
-                mention_text = f'<a href="tg://user?id={target}">{user_entity.first_name}</a> keling!'
-            except Exception:
-                # Agar foydalanuvchi keshda mutlaqo topilmasa, oddiy text havola
-                mention_text = f'<a href="tg://user?id={target}">Foydalanuvchi</a> chaqirilmoqda!'
-        else:
-            # Agar username bo'lsa (masalan @username)
-            mention_text = f"{target} keling!"
-
-        while True:
-            # Xabarni HTML formatida yuborish
-            await client.send_message(chat_id, mention_text, parse_mode="html")
-            # Telegram chekloviga tushmaslik uchun 1.5 soniya kutish
-            await asyncio.sleep(1.5)
-            
-    except asyncio.CancelledError:
-        pass  # Vazifa bekor qilinganda xatolik bermaydi
-    except Exception as e:
-        print(f"Spam xatolik: {e}")
-
-
-@client.on(events.NewMessage(pattern=r"^\.u(?:\s+(.+))?$", outgoing=True))
-async def start_infinite_mention(event):
-    chat_id = event.chat_id
-    target = event.pattern_match.group(1)
-
-    # Agar reply qilingan bo'lsa va matn kiritilmagan bo'lsa, o'sha odamning ID sini olish
-    if not target and event.is_reply:
-        reply = await event.get_reply_message()
-        if reply and getattr(reply, "sender_id", None):
-            target = str(reply.sender_id)
-
-    if not target:
-        return await event.edit("Foydalanuvchini kiriting: `.u @username` yoki `.u user_id` yoki xabarga reply qiling.")
-
-    # Agar ushbu chatda allaqachon spam faol bo'lsa, uni to'xtatish
-    if chat_id in active_spams:
-        active_spams[chat_id].cancel()
-
-    await event.delete()
-    
-    # Yangi cheksiz vazifani ishga tushirish va ro'yxatga saqlash
-    task = asyncio.create_task(spam_worker(chat_id, target))
-    active_spams[chat_id] = task
-
-# --- SHARPA REJIMI (GHOST MODE) BUYRUKLARI ---
-@client.on(events.NewMessage(pattern=r"^\.ghost$", outgoing=True))
-async def toggle_ghost_mode(event):
-    global ghost_mode
-    ghost_mode = not ghost_mode
-    
-    if ghost_mode:
-        try:
-            # Serverga oflayn holat so'rovini yuborish
-            await client(functions.account.UpdateStatusRequest(
-                status=types.UserStatusOffline(was_online=int(time.time()))
-            ))
-        except Exception:
-            pass
-        await event.edit("👻 **Sharpa rejimi yoqildi!**\nSiz doim oflaynsiz. Kelgan xabarlarni ochib o'qisangiz ham suhbatdoshingizda o'qildi (double-tick) belgisi chiqmaydi.")
-    else:
-        try:
-            # Serverga qayta onlayn holat so'rovini yuborish
-            await client(functions.account.UpdateStatusRequest(
-                status=types.UserStatusOnline(expires=int(time.time()) + 60)
-            ))
-        except Exception:
-            pass
-        await event.edit("👤 **Sharpa rejimi o'chirildi!**\nStandart onlayn holatga qaytildi.")
-
-
-# Kelayotgan xabarlarni avtomatik "o'qildi" bo'lishini cheklash filteri
-@client.on(events.NewMessage(incoming=True))
-async def ghost_message_handler(event):
-    global ghost_mode
-    # Agar sharpa rejimi yoqilgan bo'lsa, xabarlarni o'qilganlik tarixiga kiritmaslik
-    if ghost_mode:
-        try:
-            event.reply_markup = None
-        except Exception:
-            pass
 
 
 fake_server = Flask(__name__)
