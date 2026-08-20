@@ -4,11 +4,12 @@ import asyncio
 import threading
 import requests
 from flask import Flask
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.types import ChatAdminRights
 
-API_ID = int(os.getenv("API_ID", "0"))
+# --- SOZLAMALAR ---
+API_ID = int(os.getenv("API_ID", "0")) 
 API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = "antidelete_session"
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
@@ -16,15 +17,13 @@ TARGET_LANG = "uz"
 
 CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
+CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kunlik kesh vaqti
 CACHE_MAX_ENTRIES = 3000
 
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 user_tags = {}
-# Chaqirish (spam) vazifalarini kuzatish uchun lug'at
-active_spams = {}
-
+ghost_mode = False  # Sharpa rejimi holati
 
 
 def mention_html(name, user_id):
@@ -37,7 +36,6 @@ def is_media_message(message):
 
 
 async def download_to_disk(message):
-    """Media faylni RAM emas, diskka yuklaydi - xotira sarfini kamaytirish uchun."""
     try:
         if message.video_note:
             ext = "mp4"
@@ -61,7 +59,6 @@ async def download_to_disk(message):
 
 
 def cleanup_old_cache():
-    """Eski kesh yozuvlarini va disk fayllarini vaqti-vaqti bilan tozalaydi."""
     now = time.time()
     expired_keys = []
     for key, data in list(private_message_cache.items()):
@@ -89,7 +86,7 @@ def cleanup_old_cache():
 
 async def periodic_cleanup():
     while True:
-        await asyncio.sleep(1800)  # har 30 daqiqada
+        await asyncio.sleep(1800)
         cleanup_old_cache()
 
 
@@ -129,9 +126,12 @@ async def on_message_deleted(event):
         data = private_message_cache.pop(msg_id, None)
         if not data:
             continue
-        sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
-        sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
-        sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
+        try:
+            sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
+            sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
+            sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
+        except Exception:
+            sender_link = "Noma'lum"
 
         caption = (
             f"O'chirilgan shaxsiy xabar\n"
@@ -155,7 +155,6 @@ async def on_message_deleted(event):
             print(f"Log kanalga yuborishda xatolik: {e}")
 
 
-# Media reply orqali saqlash - endi shaxsiy chat, guruh va kanallarda ham ishlaydi
 @client.on(events.NewMessage(outgoing=True))
 async def save_media_via_reply(event):
     if not LOG_CHANNEL_ID:
@@ -189,7 +188,6 @@ async def save_media_via_reply(event):
         caption = f"{kind} (reply orqali saqlandi)\nKimdan: {sender_link}"
         media_path = await download_to_disk(reply)
         if not media_path:
-            print("Reply media: yuklab bolmadi (bo'sh)")
             return
         await client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, video_note=is_round, parse_mode="html")
         try:
@@ -241,12 +239,10 @@ async def remove_admin_tag(event):
         await event.edit(f"Xatolik: {e}")
 
 
-# .delete - o'zining barcha xabarlarini o'chiradi (guruh + shaxsiy), yakuniy xabarsiz
 @client.on(events.NewMessage(pattern=r"^\.delete$", outgoing=True))
 async def delete_my_messages(event):
     chat_id = event.chat_id
     me = await client.get_me()
-
     await event.delete()
 
     ids_batch = []
@@ -291,94 +287,4 @@ async def translate_message(event):
     reply = await event.get_reply_message()
     if not reply or not reply.raw_text:
         return await event.edit("Tarjima qilinadigan xabarga reply qiling.")
-    await event.edit("Tarjima qilinmoqda...")
-    try:
-        resp = requests.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "auto", "tl": TARGET_LANG, "dt": "t", "q": reply.raw_text},
-            timeout=10,
-        )
-        result = resp.json()
-        translated = "".join([seg[0] for seg in result[0]])
-        await event.edit(f"Tarjima:\n{translated}")
-    except Exception as e:
-        await event.edit(f"Tarjima xatoligi: {e}")
 
-@client.on(events.NewMessage(pattern=r"^\.u(?:\s+(.+))?$", outgoing=True))
-async def start_infinite_mention(event):
-    chat_id = event.chat_id
-    target = event.pattern_match.group(1)
-
-    # Agar reply qilingan bo'lsa va ID yozilmagan bo'lsa
-    if not target and event.is_reply:
-        reply = await event.get_reply_message()
-        if reply and getattr(reply, "sender_id", None):
-            target = str(reply.sender_id)
-
-    if not target:
-        return await event.edit("Foydalanuvchini kiriting: `.u @username` yoki `.u user_id` yoki xabarga reply qiling.")
-
-    # HTML formatni tayyorlash
-    if target.isdigit():
-        try:
-            user_entity = await client.get_entity(int(target))
-            mention_text = f'<a href="tg://user?id={target}">{user_entity.first_name}</a>'
-        except Exception:
-            mention_text = f'<a href="tg://user?id={target}">Foydalanuvchi</a> '
-    else:
-        mention_text = f"{target} "
-
-    # Ushbu chatda chaqirishni faollashtirish
-    active_spams[chat_id] = True
-    await event.delete()
-
-    # Oddiy while sikli orqali cheksiz chaqirish
-    try:
-        while active_spams.get(chat_id, False):
-            await client.send_message(chat_id, mention_text, parse_mode="html")
-            await asyncio.sleep(0.5)  # Telegram bloklamasligi uchun cheklov
-    except Exception as e:
-        print(f"Spam xatolik: {e}")
-
-
-@client.on(events.NewMessage(pattern=r"^\.stop$", outgoing=True))
-async def stop_infinite_mention(event):
-    chat_id = event.chat_id
-    await event.delete()
-
-    # Agar ushbu chatda spam faol bo'lsa, uni False qilib to'xtatamiz
-    if chat_id in active_spams and active_spams[chat_id]:
-        active_spams[chat_id] = False
-        msg = await client.send_message(chat_id, "Chaqirish muvaffaqiyatli to'xtatildi!")
-        await asyncio.sleep(3)
-        await msg.delete()
-    else:
-        msg = await client.send_message(chat_id, "Bu chatda faol chaqirish jarayoni topilmadi.")
-        await asyncio.sleep(3)
-        await msg.delete()
-
-
-fake_server = Flask(__name__)
-
-
-@fake_server.route("/")
-def home():
-    return "Bot ishlab turibdi."
-
-
-def run_fake_server():
-    port = int(os.getenv("PORT", 8080))
-    fake_server.run(host="0.0.0.0", port=port)
-
-
-async def main():
-    threading.Thread(target=run_fake_server, daemon=True).start()
-    asyncio.create_task(periodic_cleanup())
-    await client.start()
-    print("Userbot ishga tushdi.")
-    await client.run_until_disconnected()
-
-
-if __name__ == "__main__":
-    with client:
-        client.loop.run_until_complete(main())
