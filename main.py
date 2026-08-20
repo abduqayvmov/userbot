@@ -328,6 +328,60 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
+# --- KUZATUV BUYRUKLARI ---
+@client.on(events.NewMessage(pattern=r"^\.kuzat(?:\s+(.+))?$", outgoing=True))
+async def add_to_spy(event):
+    target = event.pattern_match.group(1)
+    
+    if not target and event.is_reply:
+        reply = await event.get_reply_message()
+        if reply and getattr(reply, "sender_id", None):
+            target = str(reply.sender_id)
+
+    if not target:
+        return await event.edit("Foydalanuvchini kiriting: `.kuzat @username` yoki `.kuzat user_id` yoki reply qiling.")
+
+    await event.edit("Foydalanuvchi ma'lumotlari tekshirilmoqda...")
+    try:
+        user_entity = await client.get_entity(int(target) if target.isdigit() else target)
+        full_user = await client(GetFullUserRequest(user_entity.id))
+        
+        user_id_str = str(user_entity.id)
+        watched_users[user_id_str] = {
+            "first_name": user_entity.first_name or "",
+            "last_name": user_entity.last_name or "",
+            "username": user_entity.username or "",
+            "bio": full_user.full_user.about or "",
+            "photo_id": str(user_entity.photo.photo_id) if user_entity.photo else "yoq"
+        }
+        save_watched_users(watched_users)
+        await event.edit(f"🎯 {mention_html(user_entity.first_name, user_entity.id)} **kuzatuv ro'yxatiga qo'shildi!**\nProfil rasmi, ismi, username va biosi o'zgarganda bildirishnoma yuboriladi.", parse_mode="html")
+    except Exception as e:
+        await event.edit(f"Xatolik: Foydalanuvchi topilmadi. ({e})")
+
+
+@client.on(events.NewMessage(pattern=r"^\.kuzatuvlar$", outgoing=True))
+async def list_spy(event):
+    if not watched_users:
+        return await event.edit("Hozirda hech kim kuzatilmayapti.")
+    
+    text = "🎯 **Kuzatuv ostidagi foydalanuvchilar:**\n\n"
+    for uid, data in watched_users.items():
+        text += f"👤 {data['first_name']} — (ID: `{uid}`) [@{data['username'] or 'username_yoq'}]\n"
+    await event.edit(text)
+
+
+@client.on(events.NewMessage(pattern=r"^\.unkuzat\s+(.+)$", outgoing=True))
+async def remove_spy(event):
+    target = event.pattern_match.group(1).strip()
+    if target in watched_users:
+        del watched_users[target]
+        save_watched_users(watched_users)
+        await event.edit(f"❌ ID: `{target}` kuzatuv ro'yxatidan olib tashlandi.")
+    else:
+        await event.edit("Bu ID kuzatuv ro'yxatida topilmadi. Olib tashlash uchun aniq ID raqamini yozing.")
+
+
 # --- AVTOMATIK KUZATISH TIZIMI (BACKGROUND MONITOR) ---
 async def spy_monitor_worker():
     """Har 5 daqiqada belgilangan foydalanuvchilar profilini tekshiradi."""
@@ -403,6 +457,12 @@ async def main():
     await client.start()
     print("Userbot ishga tushdi.")
     await client.run_until_disconnected()
+    async def main():
+    # ... mavjud kodingiz qatorlari ...
+    asyncio.create_task(spy_monitor_worker()) # Buni qo'shing
+    await client.start()
+    # ... rest of main ...
+
 
 
 if __name__ == "__main__":
