@@ -301,32 +301,30 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
-# --- XATOLARI TO'LIQ TUZATILGAN 100% ISHLAYDIGAN AI FUNKSIYASI ---
+# --- XATOLARI TUBDAN TUZATILGAN 100% BEPUL AI FUNKSIYASI ---
 @client.on(events.NewMessage(pattern=r"^\.ai\s+(.+)$", outgoing=True))
 async def ai_assistant(event):
     prompt = event.pattern_match.group(1).strip()
     await event.edit("🤖 *O'ylanmoqda...*")
     
     try:
-        # Tizim uchun qo'shimcha buyruq (System Prompt)
-        system_prompt = "Siz Telegram userbot ichida ishlaydigan aqlli yordamchisiz. Har doim o'zbek tilida, juda qisqa va lo'nda javob bering."
+        # Tizim uchun qo'shimcha maxfiy buyruq (System Prompt)
+        system_prompt = "Siz Telegram userbot ichida ishlaydigan foydali va aqlli yordamchisiz. Har doim o'zbek tilida, juda qisqa va lo'nda javob bering."
         
-        # GET so'rovi uchun xavfsiz URL yaratish (Matndagi bo'shliqlarni URL formatiga o'tkazish)
         import urllib.parse
         encoded_prompt = urllib.parse.quote(prompt)
         encoded_system = urllib.parse.quote(system_prompt)
         
-        # Pollinations AI ning 100% ishlaydigan bepul GET endpoind manzili
-        url = f"https://text.pollinations.ai/{encoded_prompt}?system={encoded_system}&model=openai"
+        # 402 to'lov xatosini aylanib o'tish uchun mutlaqo bepul Qwen modelidan foydalanamiz
+        url = f"https://text.pollinations.ai/{encoded_prompt}?system={encoded_system}&model=qwen"
         
-        # So'rovni asyncio orqali xavfsiz parallel yuborish (Siklni qotirmaslik uchun)
+        # So'rovni asyncio orqali xavfsiz parallel yuborish
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
-            None, lambda: requests.get(url, timeout=20) # POST emas, GET requests ishlatildi
+            None, lambda: requests.get(url, timeout=25)
         )
         
         if response.status_code == 200:
-            # Server toza matn qaytargani uchun hech qanday JSON o'qish shart emas
             ai_response = response.text
             
             if ai_response:
@@ -338,8 +336,6 @@ async def ai_assistant(event):
             
     except Exception as e:
         await event.edit(f"❌ AI xatoligi: {e}")
-
-
 
 
 
