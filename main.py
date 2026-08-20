@@ -301,51 +301,48 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
-# --- YANGI REPLIT VA RENDER UCHUN 100% ISHLAYDIGAN AI FUNKSIYASI ---
+# --- ENG TO'G'RI VA BLOKIROVKASIZ ISHLAYDIGAN AI FUNKSIYASI ---
 @client.on(events.NewMessage(pattern=r"^\.ai\s+(.+)$", outgoing=True))
 async def ai_assistant(event):
     prompt = event.pattern_match.group(1).strip()
     await event.edit("🤖 *O'ylanmoqda...*")
     
     try:
-        # Hech qanday blokirovkaga tushmaydigan ochiq AI API manzili
-        url = "https://openrouter.ai"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer free"  # Bepul ochiq kalit rejimi
-        }
+        # Mutloq bepul va hech qanday API kalit talab qilmaydigan ochiq tarmoq
+        url = "https://pollinations.ai"
         
         payload = {
-            "model": "meta-llama/llama-3-8b-instruct:free",  # Bepul Llama-3 modeli
             "messages": [
                 {
                     "role": "system", 
-                    "content": "Siz Telegram userbot ichida ishlaydigan foydali va aqlli yordamchisiz. Har doim o'zbek tilida, qisqa va lo'nda javob bering."
+                    "content": "Siz Telegram userbot ichida ishlaydigan foydali va aqlli yordamchisiz. Har doim o'zbek tilida, juda qisqa va lo'nda javob bering."
                 },
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            "model": "openai", # OpenAI GPT modelidan bepul foydalanish
+            "jsonMode": False
         }
         
         # So'rovni asyncio orqali xavfsiz parallel yuborish
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
-            None, lambda: requests.post(url, json=payload, headers=headers, timeout=20)
+            None, lambda: requests.post(url, json=payload, timeout=20)
         )
         
         if response.status_code == 200:
-            res_json = response.json()
-            # Kelgan javob matnini ajratib olish
-            ai_response = res_json['choices'][0]['message']['content']
+            # Pollinations matnni to'g'ridan-to'g'ri qaytaradi (JSON decode xatoligi bo'lmaydi)
+            ai_response = response.text
             
             if ai_response:
                 await event.edit(f"🤖 **AI javobi:**\n\n{ai_response.strip()}")
             else:
-                await event.edit("❌ Javob matnini o'qishda xatolik yuz berdi.")
+                await event.edit("❌ Javob matni bo'sh qaytdi.")
         else:
             await event.edit(f"❌ AI serveri xato qaytardi (Status: {response.status_code}).")
             
     except Exception as e:
         await event.edit(f"❌ AI xatoligi: {e}")
+
 
 
 
