@@ -14,6 +14,9 @@ SESSION_NAME = "antidelete_session"
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 TARGET_LANG = "uz"
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+AI_MODEL = os.getenv("AI_MODEL", "claude-3-5-sonnet-latest")
+
 CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
@@ -301,42 +304,42 @@ async def translate_message(event):
     except Exception as e:
         await event.edit(f"Tarjima xatoligi: {e}")
 
-# --- XATOLARI TUBDAN TUZATILGAN 100% BEPUL AI FUNKSIYASI ---
-@client.on(events.NewMessage(pattern=r"^\.ai\s+(.+)$", outgoing=True))
-async def ai_assistant(event):
-    prompt = event.pattern_match.group(1).strip()
-    await event.edit("🤖 *O'ylanmoqda...*")
-    
-    try:
-        # Tizim uchun qo'shimcha maxfiy buyruq (System Prompt)
-        system_prompt = "Siz Telegram userbot ichida ishlaydigan foydali va aqlli yordamchisiz. Har doim o'zbek tilida, juda qisqa va lo'nda javob bering."
-        
-        import urllib.parse
-        encoded_prompt = urllib.parse.quote(prompt)
-        encoded_system = urllib.parse.quote(system_prompt)
-        
-        # 402 to'lov xatosini aylanib o'tish uchun mutlaqo bepul Qwen modelidan foydalanamiz
-        url = f"https://text.pollinations.ai/{encoded_prompt}?system={encoded_system}&model=qwen"
-        
-        # So'rovni asyncio orqali xavfsiz parallel yuborish
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, lambda: requests.get(url, timeout=25)
-        )
-        
-        if response.status_code == 200:
-            ai_response = response.text
-            
-            if ai_response:
-                await event.edit(f"🤖 **AI javobi:**\n\n{ai_response.strip()}")
-            else:
-                await event.edit("❌ AI dan bo'sh javob qaytdi.")
-        else:
-            await event.edit(f"❌ AI serveri xato qaytardi (Status: {response.status_code}).")
-            
-    except Exception as e:
-        await event.edit(f"❌ AI xatoligi: {e}")
 
+@client.on(events.NewMessage(pattern=r"^\.ai\s+(.+)$", outgoing=True))
+async def ai_query(event):
+    if not ANTHROPIC_API_KEY:
+        return await event.edit("ANTHROPIC_API_KEY sozlanmagan.")
+
+    query = event.pattern_match.group(1)
+    await event.edit("So'ralmoqda...")
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": AI_MODEL,
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": query}],
+            },
+            timeout=60,
+        )
+        data = resp.json()
+
+        if "content" in data:
+            answer = "".join(
+                block.get("text", "") for block in data["content"] if block.get("type") == "text"
+            )
+            answer = answer.strip() or "Javob bosh keldi."
+            await event.edit(answer[:4000])
+        else:
+            err = data.get("error", {}).get("message", str(data))
+            await event.edit(f"Xatolik: {err}")
+    except Exception as e:
+        await event.edit(f"Xatolik: {e}")
 
 
 fake_server = Flask(__name__)
