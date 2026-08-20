@@ -387,7 +387,7 @@ async def spy_monitor_worker():
     """Har 5 daqiqada belgilangan foydalanuvchilar profilini tekshiradi."""
     await client.connected()
     while True:
-        await asyncio.sleep(300) # 5 daqiqa kutiladi
+        await asyncio.sleep(60) # 1 daqiqa kutiladi
         global watched_users
         watched_users = load_watched_users()
         
