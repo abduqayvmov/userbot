@@ -247,7 +247,7 @@ async def delete_my_messages(event):
     await event.delete()
 
     ids_batch = []
-    async for msg in client.iter_messages(chat_id, from_user=me.id, mark_read=False):
+    async for msg in client.iter_messages(chat_id, from_user=me.id):
         ids_batch.append(msg.id)
         if len(ids_batch) == 100:
             try:
