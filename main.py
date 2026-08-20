@@ -341,6 +341,62 @@ async def ai_query(event):
     except Exception as e:
         await event.edit(f"Xatolik: {e}")
 
+# --- GOROUTER UCHUN MAXSUS BARQAROR AI FUNKSIYASI (.aii) ---
+@client.on(events.NewMessage(pattern=r"^\.aii\s+(.+)$", outgoing=True))
+async def ai_assistant(event):
+    prompt = event.pattern_match.group(1).strip()
+    await event.edit("🤖 *O'ylanmoqda...*")
+    
+    # Render'ga kiritilgan muhit o'zgaruvchilarini olish
+    base_url = os.getenv("OPENAI_BASE_URL", "https://gorouter.app")
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    
+    if not api_key:
+        return await event.edit("❌ Xatolik: Render sozlamalarida `OPENAI_API_KEY` topilmadi!")
+    
+    try:
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        
+        payload = {
+            "model": "gpt-4o-mini",  # GoRouter dagi eng tezkor va hamyonbop model
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": "Siz Telegram userbot ichida ishlaydigan foydali va aqlli yordamchisiz. Har doim o'zbek tilida, juda qisqa, lo'nda va aniq javob bering."
+                },
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        # So'rovni asyncio orqali Render tarmog'ida parallel va xavfsiz yuborish
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: requests.post(url, json=payload, headers=headers, timeout=30)
+        )
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            # Kelgan rasmiy javob matnini uzilishlarsiz aniq ajratib olish
+            ai_response = res_json['choices']['message']['content']
+            
+            if ai_response:
+                await event.edit(f"🤖 **AI javobi:**\n\n{ai_response.strip()}")
+            else:
+                await event.edit("❌ AI serveridan bo'sh matn qaytdi.")
+        elif response.status_code == 401:
+            await event.edit("❌ Xatolik: GoRouter API kalitiz noto'g'ri yoki faol emas!")
+        elif response.status_code == 429:
+            await event.edit("❌ Xatolik: GoRouter hisobingizda limit yoki mablag' tugagan!")
+        else:
+            await event.edit(f"❌ AI serveri xato qaytardi (Status: {response.status_code}).")
+            
+    except Exception as e:
+        await event.edit(f"❌ AI xatoligi: {e}")
+
 
 fake_server = Flask(__name__)
 
