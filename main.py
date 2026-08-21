@@ -329,6 +329,8 @@ async def translate_message(event):
 
 @client.on(events.NewMessage(pattern=r"^\.(kontakt|контакт)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
+    from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
+
     target = event.pattern_match.group(2)
     if not target:
         reply = await event.get_reply_message()
@@ -338,24 +340,60 @@ async def check_mutual_contact(event):
             return await event.edit("Foydalanish: .kontakt @username yoki .kontakt ID (yoki reply qiling)")
 
     await event.edit("Tekshirilmoqda...")
+    temporarily_added = False
     try:
         entity = await client.get_entity(target.strip())
+
         full = await client(GetFullUserRequest(entity))
         user = full.users[0] if full.users else entity
+        was_contact = getattr(user, "contact", False)
+
+        # Agar hali kontaktda bo'lmasa, vaqtincha qo'shib, natijani tekshiramiz,
+        # keyin darhol olib tashlaymiz - shunda doimiy ravishda hech kim qo'shilib qolmaydi.
+        if not was_contact:
+            try:
+                add_result = await client(AddContactRequest(
+                    id=entity, first_name=getattr(user, "first_name", None) or "Tekshiruv",
+                    last_name="", phone="",
+                ))
+                if add_result.users:
+                    user = add_result.users[0]
+                temporarily_added = True
+            except Exception as e:
+                print(f".kontakt: vaqtincha qoshishda xatolik: {e}")
 
         name = getattr(user, "first_name", None) or "Noma'lum"
-        is_contact = getattr(user, "contact", False)
+        username = getattr(user, "username", None)
+        user_id = getattr(user, "id", None) or entity.id
         is_mutual = getattr(user, "mutual_contact", False)
 
-        if is_mutual:
-            status = "Sizlar o'zaro kontaktdasiz (u ham sizni qo'shgan)."
-        elif is_contact:
-            status = "Siz uni kontaktga qo'shgansiz, lekin u sizni qo'shmagan."
-        else:
-            status = "U sizning kontaktingizda emas."
+        if temporarily_added:
+            try:
+                await client(DeleteContactsRequest(id=[entity]))
+            except Exception as e:
+                print(f".kontakt: vaqtincha kontaktni olib tashlashda xatolik: {e}")
 
-        await event.edit(f"{name}\n{status}")
+        if is_mutual:
+            status = "Kontaktiga qo'shgan"
+        else:
+            status = "Kontaktiga qo'shmagan."
+
+        name_link = mention_html(name, user_id)
+        username_part = f"@{username}" if username else "(username yoq)"
+
+        result_text = (
+            f"{name_link}\n"
+            f"Username: {username_part}\n"
+            f"ID: {user_id}\n"
+            f"{status}"
+        )
+        await event.edit(result_text, parse_mode="html")
     except Exception as e:
+        if temporarily_added:
+            try:
+                await client(DeleteContactsRequest(id=[target]))
+            except Exception:
+                pass
         await event.edit(f"Xatolik: {e}")
 
 
@@ -383,4 +421,3 @@ async def main():
 if __name__ == "__main__":
     with client:
         client.loop.run_until_complete(main())
-        
