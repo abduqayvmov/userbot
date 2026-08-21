@@ -7,6 +7,7 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import EditAdminRequest
+from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
 
 API_ID = int(os.getenv("API_ID", "0"))
@@ -326,6 +327,38 @@ async def translate_message(event):
         await event.edit(f"Tarjima xatoligi: {e}")
 
 
+@client.on(events.NewMessage(pattern=r"^\.(kontakt|контакт)(?:\s+(.+))?$", outgoing=True))
+async def check_mutual_contact(event):
+    target = event.pattern_match.group(2)
+    if not target:
+        reply = await event.get_reply_message()
+        if reply and reply.sender_id:
+            target = str(reply.sender_id)
+        else:
+            return await event.edit("Foydalanish: .kontakt @username yoki .kontakt ID (yoki reply qiling)")
+
+    await event.edit("Tekshirilmoqda...")
+    try:
+        entity = await client.get_entity(target.strip())
+        full = await client(GetFullUserRequest(entity))
+        user = full.users[0] if full.users else entity
+
+        name = getattr(user, "first_name", None) or "Noma'lum"
+        is_contact = getattr(user, "contact", False)
+        is_mutual = getattr(user, "mutual_contact", False)
+
+        if is_mutual:
+            status = "Sizlar o'zaro kontaktdasiz (u ham sizni qo'shgan)."
+        elif is_contact:
+            status = "Siz uni kontaktga qo'shgansiz, lekin u sizni qo'shmagan."
+        else:
+            status = "U sizning kontaktingizda emas."
+
+        await event.edit(f"{name}\n{status}")
+    except Exception as e:
+        await event.edit(f"Xatolik: {e}")
+
+
 fake_server = Flask(__name__)
 
 
@@ -350,3 +383,4 @@ async def main():
 if __name__ == "__main__":
     with client:
         client.loop.run_until_complete(main())
+        
