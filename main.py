@@ -342,7 +342,15 @@ async def check_mutual_contact(event):
     await event.edit("Tekshirilmoqda...")
     temporarily_added = False
     try:
+        from telethon.tl.types import User as TgUser
+
         entity = await client.get_entity(target.strip())
+
+        if not isinstance(entity, TgUser):
+            return await event.edit(
+                "Bu buyruq faqat oddiy foydalanuvchilar uchun ishlaydi "
+                "(kanal yoki anonim admin uchun ishlamaydi)."
+            )
 
         full = await client(GetFullUserRequest(entity))
         user = full.users[0] if full.users else entity
@@ -374,9 +382,9 @@ async def check_mutual_contact(event):
                 print(f".kontakt: vaqtincha kontaktni olib tashlashda xatolik: {e}")
 
         if is_mutual:
-            status = "Kontaktiga qo'shgan"
+            status = "U sizni ham kontaktiga qo'shgan (o'zaro)."
         else:
-            status = "Kontaktiga qo'shmagan."
+            status = "U sizni kontaktiga qo'shmagan."
 
         name_link = mention_html(name, user_id)
         username_part = f"@{username}" if username else "(username yoq)"
