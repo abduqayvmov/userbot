@@ -330,21 +330,26 @@ async def translate_message(event):
 @client.on(events.NewMessage(pattern=r"^\.(kontakt|контакт)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
     from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
+    from telethon.tl.types import User as TgUser
 
     target = event.pattern_match.group(2)
+    entity = None
+
     if not target:
         reply = await event.get_reply_message()
         if reply and reply.sender_id:
-            target = str(reply.sender_id)
+            # Reply orqali entity'ni to'g'ridan-to'g'ri olamiz -
+            # bu bare ID orqali get_entity() qilishga qaraganda ishonchli,
+            # chunki access_hash reply xabaridan avtomatik olinadi.
+            entity = await reply.get_sender()
         else:
             return await event.edit("Foydalanish: .kontakt @username yoki .kontakt ID (yoki reply qiling)")
 
     await event.edit("Tekshirilmoqda...")
     temporarily_added = False
     try:
-        from telethon.tl.types import User as TgUser
-
-        entity = await client.get_entity(target.strip())
+        if entity is None:
+            entity = await client.get_entity(target.strip())
 
         if not isinstance(entity, TgUser):
             return await event.edit(
