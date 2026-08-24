@@ -472,6 +472,26 @@ async def translate_message(event):
         await event.edit(f"Tarjima xatoligi: {e}")
 
 
+@client.on(events.NewMessage(pattern=r"^\.(ai|аи)(?:\s+([\s\S]+))?$", outgoing=True))
+async def ask_ai(event):
+    if not GEMINI_API_KEY:
+        return await event.edit("GEMINI_API_KEY sozlanmagan.")
+
+    question = event.pattern_match.group(2)
+    if not question:
+        reply = await event.get_reply_message()
+        if reply and reply.raw_text:
+            question = reply.raw_text
+    if not question:
+        return await event.edit("Savol yozing: .ai savolingiz")
+
+    await event.edit("O'ylanmoqda...")
+    answer = await asyncio.to_thread(call_gemini, question)
+    if not answer:
+        return await event.edit("AI javob bera olmadi, keyinroq urinib ko'ring.")
+    await event.edit(f"🤖 {answer}"[:4096])
+
+
 @client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
     from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
