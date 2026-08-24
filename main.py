@@ -108,12 +108,10 @@ def load_watched_usernames():
 load_watched_usernames()
 
 
-# YANGI KOD:
 def mention_html(name, user_id):
     safe_name = html.escape(name or "Noma'lum")
-    # Havola matniga foydalanuvchi ismi bilan birga ID raqamini ham qo'shib yuboramiz.
-    # Shunda log kanalda har doim ustiga bossa bo'ladigan (tag qilingan) ko'rinishda chiqadi.
-    return f'<a href="tg://user?id={user_id}">{safe_name} [ID: {user_id}]</a>'
+    return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+
 
 
 
@@ -313,7 +311,7 @@ async def on_message_deleted(event):
             f"Vaqt: {data['date']}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
-        send_log_message(caption, data["media_path"], data.get("media_kind"))
+       await send_log_message(caption, data["media_path"], data.get("media_kind"))
 
     if any_removed:
         save_cache_to_disk()
@@ -358,7 +356,7 @@ async def save_media_via_reply(event):
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
             return
-        send_log_message(caption, media_path, message_media_kind(reply))
+        await send_log_message(caption, media_path, message_media_kind(reply))
     except Exception as e:
         print(f"Reply orqali media saqlashda xatolik: {e}")
 
