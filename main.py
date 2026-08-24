@@ -311,7 +311,7 @@ async def on_message_deleted(event):
             f"Vaqt: {data['date']}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
-       await send_log_message(caption, data["media_path"], data.get("media_kind"))
+        await send_log_message(caption, data["media_path"], data.get("media_kind"))
 
     if any_removed:
         save_cache_to_disk()
