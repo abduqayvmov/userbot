@@ -3,7 +3,6 @@ import re
 import html
 import time
 import json
-import base64
 import sqlite3
 import asyncio
 import threading
@@ -551,58 +550,6 @@ async def ask_ai(event):
     if not answer:
         return await event.edit("AI javob bera olmadi, keyinroq urinib ko'ring.")
     await event.edit(f"🤖 {answer}"[:4096])
-
-
-def transcribe_audio(file_path):
-    try:
-        with open(file_path, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-        resp = requests.post(
-            GEMINI_API_URL,
-            params={"key": GEMINI_API_KEY},
-            json={
-                "contents": [{
-                    "parts": [
-                        {"text": "Ushbu audio xabarni so'zma-so'z matnga o'gir. Faqat transkripsiyani yoz, boshqa hech narsa qo'shma."},
-                        {"inline_data": {"mime_type": "audio/ogg", "data": audio_b64}},
-                    ]
-                }]
-            },
-            timeout=60,
-        )
-        if not resp.ok:
-            print(f"Gemini STT xatolik: {resp.status_code} {resp.text}")
-            return None
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        print(f"Gemini STT so'rovida xatolik: {e}")
-        return None
-
-
-@client.on(events.NewMessage(pattern=r"^\.(stt|стт)$", outgoing=True))
-async def transcribe_voice(event):
-    if not GEMINI_API_KEY:
-        return await event.edit("GEMINI_API_KEY sozlanmagan.")
-    reply = await event.get_reply_message()
-    if not reply or not reply.voice:
-        return await event.edit("Ovozli xabarga reply qiling: .stt")
-
-    await event.edit("Matnga o'girilmoqda...")
-    media_path = await download_to_disk(reply)
-    if not media_path:
-        return await event.edit("Ovozli xabarni yuklab bo'lmadi.")
-    try:
-        text = await asyncio.to_thread(transcribe_audio, media_path)
-    finally:
-        try:
-            os.remove(media_path)
-        except Exception:
-            pass
-
-    if not text:
-        return await event.edit("Matnga o'girib bo'lmadi, keyinroq urinib ko'ring.")
-    await event.edit(f"🎤 {text}"[:4096])
 
 
 @client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
