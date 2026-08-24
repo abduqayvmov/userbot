@@ -10,6 +10,7 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import UpdateUsernameRequest
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.users import GetFullUserRequest
@@ -28,7 +29,7 @@ CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
 CACHE_MAX_ENTRIES = 3000
 CACHE_INDEX_FILE = os.path.join(CACHE_DIR, "cache_index.json")
 WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
-USERNAME_CHECK_INTERVAL = 300  # 5 daqiqa
+USERNAME_CHECK_INTERVAL = 15  # soniya
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
@@ -543,7 +544,11 @@ async def watch_username(event):
 
     watched_usernames[username] = {"added_at": time.time()}
     save_watched_usernames()
-    await event.edit(f"👀 @{username} kuzatuvga qo'shildi (hozir band). Bo'shab qolsa {LOG_CHANNEL_ID}'ga xabar beraman.")
+    await event.edit(
+        f"👀 @{username} kuzatuvga qo'shildi (hozir band). Bo'shab qolishi bilan (har "
+        f"{USERNAME_CHECK_INTERVAL} soniyada tekshiraman) avtomatik profilingizga o'rnataman "
+        f"va {LOG_CHANNEL_ID}'ga xabar beraman."
+    )
 
 
 @client.on(events.NewMessage(pattern=r"^\.unuser(?:\s+(.+))?$", outgoing=True))
@@ -557,38 +562,44 @@ async def unwatch_username(event):
     await event.edit(f"@{username} kuzatuvdan olib tashlandi.")
 
 
+async def _claim_and_notify(username):
+    """Bo'shab qolgan username'ni darhol profilga o'rnatishga urinadi va natijani
+    LOG_CHANNEL_ID'ga yuboradi. Boshqa kimdir bir zumda ulgurib olgan bo'lishi mumkin -
+    bu holat ham xabarda ko'rsatiladi."""
+    try:
+        await client(UpdateUsernameRequest(username))
+        status_text = f"✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
+    except Exception as e:
+        status_text = f"⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
+    try:
+        await client.send_message(LOG_CHANNEL_ID, f"🎉 #username_boshaldi\n{status_text}")
+    except Exception as e:
+        print(f".user: bildirishnoma yuborishda xatolik: {e}")
+
+
 async def check_watched_usernames():
     if not watched_usernames or not LOG_CHANNEL_ID:
         return
-    freed = []
     for username in list(watched_usernames.keys()):
         try:
             await _resolve_username_status(username)
         except UsernameNotOccupiedError:
-            freed.append(username)
+            # Bo'shagan zahoti kuzatuvdan chiqaramiz va darhol o'zlashtirishga urinamiz -
+            # tezlik muhim bo'lgani uchun keyingi usernamega o'tishdan oldin shu yerda bajaramiz.
+            watched_usernames.pop(username, None)
+            save_watched_usernames()
+            await _claim_and_notify(username)
         except UsernameInvalidError:
             print(f".user: @{username} - yaroqsiz username, kuzatuvdan olib tashlandi.")
             watched_usernames.pop(username, None)
+            save_watched_usernames()
         except FloodWaitError as e:
             wait_time = e.seconds + 2
             print(f".user: FloodWait, {wait_time} soniya kutilmoqda...")
             await asyncio.sleep(wait_time)
         except Exception as e:
             print(f".user: @{username} tekshirishda xatolik: {e}")
-        await asyncio.sleep(2)  # so'rovlar orasida biroz kutish, flood'ga tushmaslik uchun
-
-    for username in freed:
-        watched_usernames.pop(username, None)
-        try:
-            await client.send_message(
-                LOG_CHANNEL_ID,
-                f"🎉 #username_boshaldi\n@{username} endi band emas, hozir bo'sh!",
-            )
-        except Exception as e:
-            print(f".user: bildirishnoma yuborishda xatolik: {e}")
-
-    if freed:
-        save_watched_usernames()
+        await asyncio.sleep(1)  # so'rovlar orasida biroz kutish, flood'ga tushmaslik uchun
 
 
 async def periodic_username_check():
