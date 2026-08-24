@@ -3,6 +3,7 @@ import re
 import html
 import time
 import json
+import base64
 import sqlite3
 import asyncio
 import threading
@@ -103,6 +104,20 @@ def pop_cached_message(msg_id, chat_id):
     data = dict(zip(columns, row))
     db_conn.execute("DELETE FROM messages WHERE chat_id = ? AND msg_id = ?", (data["chat_id"], data["msg_id"]))
     db_conn.commit()
+    data["date"] = datetime.fromisoformat(data["date"]) if data.get("date") else None
+    return data
+
+
+def get_cached_row(chat_id, msg_id):
+    """pop_cached_message'dan farqli - o'chirmaydi, faqat o'qiydi (tahrirni
+    aniqlash uchun eski matnni bilish kerak, lekin xabar o'zi hali chatda bor)."""
+    cur = db_conn.cursor()
+    cur.execute("SELECT * FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    columns = [c[0] for c in cur.description]
+    data = dict(zip(columns, row))
     data["date"] = datetime.fromisoformat(data["date"]) if data.get("date") else None
     return data
 
@@ -303,6 +318,52 @@ async def on_message_deleted(event):
         send_log_message(caption, data["media_path"], data.get("media_kind"))
 
 
+@client.on(events.MessageEdited())
+async def on_message_edited(event):
+    if not LOG_CHANNEL_ID:
+        return
+    old = get_cached_row(event.chat_id, event.id)
+    new_text = event.raw_text or ""
+    old_text = old["text"] if old else None
+
+    cache_message_row(
+        chat_id=event.chat_id,
+        msg_id=event.id,
+        sender_id=event.sender_id,
+        text=new_text,
+        media_path=old["media_path"] if old else None,
+        media_kind=old["media_kind"] if old else (message_media_kind(event.message) if event.media else None),
+        is_private=event.is_private,
+        date=old["date"] if old and old.get("date") else event.date,
+    )
+
+    if not old_text or old_text == new_text:
+        return
+
+    sender_id = event.sender_id
+    try:
+        sender = await client.get_entity(sender_id) if sender_id else None
+    except Exception as e:
+        print(f"Yuboruvchini aniqlashda xatolik: {e}")
+        sender = None
+    sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+    sender_username = getattr(sender, "username", None)
+    user_part = f"@{sender_username}" if sender_username else "yo'q"
+    sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+    id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
+    chat_label = "shaxsiy xabar" if event.is_private else f"guruh xabari (chat_id={event.chat_id})"
+
+    caption = (
+        f"#edit\n"
+        f"Tahrirlangan {chat_label}\n"
+        f"✏️ Kimdan: {sender_link}{id_part}\n"
+        f"Vaqt: {datetime.now(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Eski matn: {html.escape(old_text)}\n"
+        f"Yangi matn: {html.escape(new_text) if new_text else '(matn yoq)'}"
+    )
+    send_log_message(caption)
+
+
 # Media reply orqali saqlash - shaxsiy chat, guruh va kanallarda ishlaydi
 @client.on(events.NewMessage(outgoing=True))
 async def save_media_via_reply(event):
@@ -490,6 +551,58 @@ async def ask_ai(event):
     if not answer:
         return await event.edit("AI javob bera olmadi, keyinroq urinib ko'ring.")
     await event.edit(f"🤖 {answer}"[:4096])
+
+
+def transcribe_audio(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+        resp = requests.post(
+            GEMINI_API_URL,
+            params={"key": GEMINI_API_KEY},
+            json={
+                "contents": [{
+                    "parts": [
+                        {"text": "Ushbu audio xabarni so'zma-so'z matnga o'gir. Faqat transkripsiyani yoz, boshqa hech narsa qo'shma."},
+                        {"inline_data": {"mime_type": "audio/ogg", "data": audio_b64}},
+                    ]
+                }]
+            },
+            timeout=60,
+        )
+        if not resp.ok:
+            print(f"Gemini STT xatolik: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"Gemini STT so'rovida xatolik: {e}")
+        return None
+
+
+@client.on(events.NewMessage(pattern=r"^\.(stt|стт)$", outgoing=True))
+async def transcribe_voice(event):
+    if not GEMINI_API_KEY:
+        return await event.edit("GEMINI_API_KEY sozlanmagan.")
+    reply = await event.get_reply_message()
+    if not reply or not reply.voice:
+        return await event.edit("Ovozli xabarga reply qiling: .stt")
+
+    await event.edit("Matnga o'girilmoqda...")
+    media_path = await download_to_disk(reply)
+    if not media_path:
+        return await event.edit("Ovozli xabarni yuklab bo'lmadi.")
+    try:
+        text = await asyncio.to_thread(transcribe_audio, media_path)
+    finally:
+        try:
+            os.remove(media_path)
+        except Exception:
+            pass
+
+    if not text:
+        return await event.edit("Matnga o'girib bo'lmadi, keyinroq urinib ko'ring.")
+    await event.edit(f"🎤 {text}"[:4096])
 
 
 @client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
