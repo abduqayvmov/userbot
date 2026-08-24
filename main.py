@@ -23,7 +23,6 @@ CACHE_MAX_ENTRIES = 3000
 
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
-user_tags = {}
 
 
 def mention_html(name, user_id):
@@ -128,7 +127,11 @@ async def on_message_deleted(event):
         data = private_message_cache.pop(msg_id, None)
         if not data:
             continue
-        sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
+        try:
+            sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
+        except Exception as e:
+            print(f"Yuboruvchini aniqlashda xatolik: {e}")
+            sender = None
         sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
         sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
 
@@ -216,7 +219,6 @@ async def add_admin_tag(event):
             ban_users=False, delete_messages=True, pin_messages=True, manage_call=True,
         )
         await client(EditAdminRequest(event.chat_id, target_id, rights, tag_text or "Admin"))
-        user_tags[target_id] = tag_text
         await event.edit(f"Admin qilindi. Teg: {tag_text or '(bosh)'}")
     except Exception as e:
         await event.edit(f"Xatolik: {e}")
@@ -237,7 +239,6 @@ async def remove_admin_tag(event):
             ban_users=False, delete_messages=False, pin_messages=False, manage_call=False,
         )
         await client(EditAdminRequest(event.chat_id, target_id, empty_rights, ""))
-        user_tags.pop(target_id, None)
         await event.edit("Admin va teg olib tashlandi.")
     except Exception as e:
         await event.edit(f"Xatolik: {e}")
