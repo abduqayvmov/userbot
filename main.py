@@ -155,43 +155,30 @@ def message_kind_emoji(message):
     return MEDIA_KIND_EMOJI.get(message_media_kind(message), "💬")
 
 
-# YANGI VA TO'G'RILANGAN FUNKSIYA (Userbot orqali yuborish):
-def send_log_message(caption, media_path=None, media_kind=None):
-    """Xabarlarni log kanalga Bot API orqali emas, Telethon (client) orqali yuboramiz.
-    Shunda tg://user?id= mention'lari (taglar) har doim va har qanday foydalanuvchi uchun 
-    100% ishlaydi va ko'k havola bo'lib chiqadi."""
+async def send_log_message(caption, media_path=None, media_kind=None):
+    """Xabarlarni log kanalga to'g'ridan-to'g'ri Userbot orqali asinxron yuboramiz.
+    Shunda tg://user?id= taglari har doim ko'k havola bo'lib, 100% ishlaydi."""
     if not LOG_CHANNEL_ID:
         return
     try:
-        # Telethon asinxron ishlagani uchun oddiy funksiya ichidan chaqirishda 
-        # joriy event_loop'dan foydalanamiz
-        loop = asyncio.get_event_loop()
-        
         if media_path and os.path.exists(media_path):
-            # Agar media fayl bo'lsa (rasm, video, ovoz, stiker)
-            asyncio.run_coroutine_threadsafe(
-                client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, parse_mode="html"),
-                loop
-            )
-            # Stiker holatida matnni alohida yuborish kerak bo'lishi mumkin (agar stiker caption qo'llab-quvvatlamasa)
+            # Media faylni asinxron yuborish
+            await client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, parse_mode="html")
+            
+            # Agar stiker bo'lsa, stiker ostida matn chiqmasligi mumkin, uni alohida ham yuboramiz
             if media_kind == "sticker":
-                asyncio.run_coroutine_threadsafe(
-                    client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html"),
-                    loop
-                )
-            # Vaqtinchalik faylni o'chirish
+                await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
+                
             try:
                 os.remove(media_path)
             except Exception:
                 pass
         else:
-            # Faqat matnli xabar bo'lsa
-            asyncio.run_coroutine_threadsafe(
-                client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html"),
-                loop
-            )
+            # Faqat matnli xabarni asinxron yuborish
+            await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
     except Exception as e:
         print(f"Log kanalga Userbot orqali yuborishda xatolik: {e}")
+
 
 
 
