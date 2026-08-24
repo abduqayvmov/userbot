@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import time
 import json
 import asyncio
@@ -106,7 +107,7 @@ load_watched_usernames()
 
 
 def mention_html(name, user_id):
-    safe_name = (name or "Noma'lum").replace("<", "").replace(">", "")
+    safe_name = html.escape(name or "Noma'lum")
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
 
@@ -244,7 +245,7 @@ async def on_message_deleted(event):
             f"O'chirilgan shaxsiy xabar\n"
             f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}{id_part}\n"
             f"Vaqt: {data['date']}\n"
-            f"Matn: {data['text'] or '(matn yoq)'}"
+            f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
         try:
             if data["media_path"] and os.path.exists(data["media_path"]):
