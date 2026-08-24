@@ -108,9 +108,13 @@ def load_watched_usernames():
 load_watched_usernames()
 
 
+# YANGI KOD:
 def mention_html(name, user_id):
     safe_name = html.escape(name or "Noma'lum")
-    return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+    # Havola matniga foydalanuvchi ismi bilan birga ID raqamini ham qo'shib yuboramiz.
+    # Shunda log kanalda har doim ustiga bossa bo'ladigan (tag qilingan) ko'rinishda chiqadi.
+    return f'<a href="tg://user?id={user_id}">{safe_name} [ID: {user_id}]</a>'
+
 
 
 def is_media_message(message):
