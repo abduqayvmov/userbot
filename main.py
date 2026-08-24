@@ -3,6 +3,7 @@ import re
 import html
 import time
 import json
+import sqlite3
 import asyncio
 import threading
 from datetime import datetime
@@ -28,9 +29,7 @@ TARGET_LANG = "uz"
 
 CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
-CACHE_MAX_ENTRIES = 3000
-CACHE_INDEX_FILE = os.path.join(CACHE_DIR, "cache_index.json")
+CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
 WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
 USERNAME_CHECK_INTERVAL = 15  # soniya
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
@@ -41,47 +40,64 @@ if SESSION_STRING:
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 else:
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-private_message_cache = {}
+db_conn = sqlite3.connect(CACHE_DB_FILE, check_same_thread=False)
+db_conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        chat_id INTEGER NOT NULL,
+        msg_id INTEGER NOT NULL,
+        sender_id INTEGER,
+        text TEXT,
+        media_path TEXT,
+        media_kind TEXT,
+        is_private INTEGER,
+        date TEXT,
+        cached_at REAL,
+        PRIMARY KEY (chat_id, msg_id)
+    )
+    """
+)
+db_conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_msg_private ON messages (msg_id, is_private)")
+db_conn.commit()
 
 
-def _serialize_cache_entry(data):
-    entry = dict(data)
-    entry["date"] = data["date"].isoformat() if data.get("date") else None
-    return entry
+def cache_message_row(chat_id, msg_id, sender_id, text, media_path, media_kind, is_private, date):
+    """Diskdagi SQLite bazaga yozadi - RAM'ga qaramaydi va vaqt/miqdor bo'yicha
+    chegaralanmagan (cheksiz) saqlaydi. Konteyner butunlay qayta qurilganda
+    (masalan Render'da yangi deploy) diskning o'zi ham tozalanadi - bu holatda
+    baza baribir bo'sh boshlanadi, buni faqat doimiy disk yoki tashqi baza bilan
+    oldini olish mumkin."""
+    db_conn.execute(
+        "INSERT OR REPLACE INTO messages "
+        "(chat_id, msg_id, sender_id, text, media_path, media_kind, is_private, date, cached_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            chat_id, msg_id, sender_id, text, media_path, media_kind, int(bool(is_private)),
+            date.isoformat() if date else None, time.time(),
+        ),
+    )
+    db_conn.commit()
 
 
-def _deserialize_cache_entry(entry):
-    data = dict(entry)
-    data["date"] = datetime.fromisoformat(entry["date"]) if entry.get("date") else None
+def pop_cached_message(msg_id, chat_id):
+    """chat_id ma'lum bo'lsa (guruh/kanal o'chirish hodisasi) aynan shu chat
+    bo'yicha, aks holda (shaxsiy xabar o'chirilganda Telegram qaysi chatligini
+    bermaydi) faqat shaxsiy xabarlar orasidan msg_id bo'yicha qidiradi -
+    shunda guruh xabari bilan tasodifiy id to'qnashuvi bo'lmaydi."""
+    cur = db_conn.cursor()
+    if chat_id is not None:
+        cur.execute("SELECT * FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
+    else:
+        cur.execute("SELECT * FROM messages WHERE msg_id = ? AND is_private = 1", (msg_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    columns = [c[0] for c in cur.description]
+    data = dict(zip(columns, row))
+    db_conn.execute("DELETE FROM messages WHERE chat_id = ? AND msg_id = ?", (data["chat_id"], data["msg_id"]))
+    db_conn.commit()
+    data["date"] = datetime.fromisoformat(data["date"]) if data.get("date") else None
     return data
-
-
-def save_cache_to_disk():
-    """Keshni diskka yozadi - jarayon qayta ishga tushganda (masalan xatolikdan
-    keyin qayta ko'tarilganda) xabarlar keshi yo'qolmasligi uchun. Konteyner
-    butunlay qayta qurilganda (masalan Render'da yangi deploy) diskning o'zi
-    ham tozalanadi, bu holatda kesh baribir bo'sh boshlanadi."""
-    try:
-        with open(CACHE_INDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump({str(k): _serialize_cache_entry(v) for k, v in private_message_cache.items()}, f)
-    except Exception as e:
-        print(f"Keshni diskka saqlashda xatolik: {e}")
-
-
-def load_cache_from_disk():
-    if not os.path.exists(CACHE_INDEX_FILE):
-        return
-    try:
-        with open(CACHE_INDEX_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        for key, entry in raw.items():
-            private_message_cache[int(key)] = _deserialize_cache_entry(entry)
-        print(f"Kesh diskdan tiklandi: {len(private_message_cache)} ta yozuv.")
-    except Exception as e:
-        print(f"Keshni diskdan yuklashda xatolik: {e}")
-
-
-load_cache_from_disk()
 
 watched_usernames = {}
 
@@ -217,81 +233,34 @@ async def download_to_disk(message):
         return None
 
 
-def cleanup_old_cache():
-    """Eski kesh yozuvlarini va disk fayllarini vaqti-vaqti bilan tozalaydi."""
-    now = time.time()
-    expired_keys = []
-    for key, data in list(private_message_cache.items()):
-        age = now - data.get("cached_at", now)
-        if age > CACHE_MAX_AGE_SECONDS:
-            expired_keys.append(key)
-
-    for key in expired_keys:
-        data = private_message_cache.pop(key, None)
-        if data and data.get("media_path") and os.path.exists(data["media_path"]):
-            try:
-                os.remove(data["media_path"])
-            except Exception:
-                pass
-
-    while len(private_message_cache) > CACHE_MAX_ENTRIES:
-        oldest_key = next(iter(private_message_cache))
-        data = private_message_cache.pop(oldest_key, None)
-        if data and data.get("media_path") and os.path.exists(data["media_path"]):
-            try:
-                os.remove(data["media_path"])
-            except Exception:
-                pass
-
-    save_cache_to_disk()
-
-
-async def periodic_cleanup():
-    while True:
-        await asyncio.sleep(1800)  # har 30 daqiqada
-        cleanup_old_cache()
-
-
 @client.on(events.NewMessage())
-async def cache_private_messages(event):
-    if event.is_private:
-        media_path = None
-        is_round = False
-        if event.media and is_media_message(event.message):
-            is_round = bool(event.video_note)
-            media_path = await download_to_disk(event.message)
+async def cache_messages(event):
+    """Shaxsiy va guruh xabarlarini bazaga keshlaydi - anti-delete cheksiz
+    muddatga ishlashi uchun (disk to'lguncha)."""
+    media_path = None
+    if event.media and is_media_message(event.message):
+        media_path = await download_to_disk(event.message)
 
-        private_message_cache[event.id] = {
-            "text": event.raw_text,
-            "sender_id": event.sender_id,
-            "chat_id": event.chat_id,
-            "media_path": media_path,
-            "is_round": is_round,
-            "media_kind": message_media_kind(event.message) if event.media else None,
-            "date": event.date,
-            "cached_at": time.time(),
-        }
-        if len(private_message_cache) > CACHE_MAX_ENTRIES:
-            oldest_key = next(iter(private_message_cache))
-            old_data = private_message_cache.pop(oldest_key, None)
-            if old_data and old_data.get("media_path") and os.path.exists(old_data["media_path"]):
-                try:
-                    os.remove(old_data["media_path"])
-                except Exception:
-                    pass
-        save_cache_to_disk()
+    cache_message_row(
+        chat_id=event.chat_id,
+        msg_id=event.id,
+        sender_id=event.sender_id,
+        text=event.raw_text,
+        media_path=media_path,
+        media_kind=message_media_kind(event.message) if event.media else None,
+        is_private=event.is_private,
+        date=event.date,
+    )
 
 
 @client.on(events.MessageDeleted())
 async def on_message_deleted(event):
     if not LOG_CHANNEL_ID:
         return
-    any_removed = False
     for msg_id in event.deleted_ids:
-        data = private_message_cache.pop(msg_id, None)
+        data = pop_cached_message(msg_id, event.chat_id)
         if not data:
             continue
-        any_removed = True
         sender_id = data["sender_id"]
         try:
             sender = await client.get_entity(sender_id) if sender_id else None
@@ -303,18 +272,16 @@ async def on_message_deleted(event):
         user_part = f"@{sender_username}" if sender_username else "yo'q"
         sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
         id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
+        chat_label = "shaxsiy xabar" if data.get("is_private") else f"guruh xabari (chat_id={data['chat_id']})"
 
         caption = (
             f"#delete\n"
-            f"O'chirilgan shaxsiy xabar\n"
+            f"O'chirilgan {chat_label}\n"
             f"{MEDIA_KIND_EMOJI.get(data.get('media_kind'), '💬')} Kimdan: {sender_link}{id_part}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
         await send_log_message(caption, data["media_path"], data.get("media_kind"))
-
-    if any_removed:
-        save_cache_to_disk()
 
 
 # Media reply orqali saqlash - shaxsiy chat, guruh va kanallarda ishlaydi
@@ -770,7 +737,6 @@ def run_fake_server():
 
 async def main():
     threading.Thread(target=run_fake_server, daemon=True).start()
-    asyncio.create_task(periodic_cleanup())
     asyncio.create_task(periodic_username_check())
     await client.start()
     print("Userbot ishga tushdi.")
