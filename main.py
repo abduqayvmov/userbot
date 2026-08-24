@@ -7,6 +7,7 @@ import sqlite3
 import asyncio
 import threading
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import requests
 from flask import Flask
 from telethon import TelegramClient, events
@@ -26,6 +27,7 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TARGET_LANG = "uz"
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
 CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -290,7 +292,7 @@ async def on_message_deleted(event):
             f"#delete\n"
             f"O'chirilgan {chat_label}\n"
             f"{MEDIA_KIND_EMOJI.get(data.get('media_kind'), '💬')} Kimdan: {sender_link}{id_part}\n"
-            f"Vaqt: {data['date']}\n"
+            f"Vaqt: {data['date'].astimezone(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
         send_log_message(caption, data["media_path"], data.get("media_kind"))
