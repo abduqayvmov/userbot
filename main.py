@@ -6,6 +6,7 @@ import requests
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
@@ -13,6 +14,7 @@ from telethon.tl.types import ChatAdminRights
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = "antidelete_session"
+SESSION_STRING = os.getenv("SESSION_STRING", "")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 TARGET_LANG = "uz"
 
@@ -21,7 +23,12 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
 CACHE_MAX_ENTRIES = 3000
 
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+# Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
+# shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
 
 
