@@ -169,31 +169,43 @@ def message_kind_emoji(message):
     return MEDIA_KIND_EMOJI.get(message_media_kind(message), "💬")
 
 
-async def send_log_message(caption, media_path=None, media_kind=None):
-    """Xabarlarni log kanalga to'g'ridan-to'g'ri Userbot orqali asinxron yuboramiz.
-    Shunda tg://user?id= taglari har doim ko'k havola bo'lib, 100% ishlaydi."""
-    if not LOG_CHANNEL_ID:
+def send_log_message(caption, media_path=None, media_kind=None):
+    """LOG_CHANNEL_ID'ga Bot API orqali yuboradi (Telethon/MTProto orqali emas) -
+    shunda tg://user?id= mention'lari yuboruvchining maxfiylik sozlamasidan
+    qat'iy nazar har doim bosiladigan bo'lib qoladi. Botni kanalga admin
+    qilib qo'shish kerak."""
+    if not BOT_TOKEN or not LOG_CHANNEL_ID:
         return
     try:
         if media_path and os.path.exists(media_path):
-            # Media faylni asinxron yuborish
-            await client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, parse_mode="html")
-            
-            # Agar stiker bo'lsa, stiker ostida matn chiqmasligi mumkin, uni alohida ham yuboramiz
-            if media_kind == "sticker":
-                await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
-                
+            method, field = BOT_API_METHOD_BY_KIND.get(media_kind, ("sendDocument", "document"))
+            with open(media_path, "rb") as f:
+                if method == "sendSticker":
+                    resp = requests.post(
+                        f"{BOT_API_URL}/sendSticker",
+                        data={"chat_id": LOG_CHANNEL_ID},
+                        files={"sticker": f},
+                        timeout=60,
+                    )
+                else:
+                    resp = requests.post(
+                        f"{BOT_API_URL}/{method}",
+                        data={"chat_id": LOG_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"},
+                        files={field: f},
+                        timeout=60,
+                    )
+            if not resp.ok:
+                print(f"Bot API {method} xatolik: {resp.status_code} {resp.text}")
+            if method == "sendSticker":
+                bot_api_send_message(caption)
             try:
                 os.remove(media_path)
             except Exception:
                 pass
         else:
-            # Faqat matnli xabarni asinxron yuborish
-            await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
+            bot_api_send_message(caption)
     except Exception as e:
-        print(f"Log kanalga Userbot orqali yuborishda xatolik: {e}")
-
-
+        print(f"Bot API'ga yuborishda xatolik: {e}")
 
 
 def bot_api_send_message(text):
@@ -281,7 +293,7 @@ async def on_message_deleted(event):
             f"Vaqt: {data['date']}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
-        await send_log_message(caption, data["media_path"], data.get("media_kind"))
+        send_log_message(caption, data["media_path"], data.get("media_kind"))
 
 
 # Media reply orqali saqlash - shaxsiy chat, guruh va kanallarda ishlaydi
@@ -323,7 +335,7 @@ async def save_media_via_reply(event):
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
             return
-        await send_log_message(caption, media_path, message_media_kind(reply))
+        send_log_message(caption, media_path, message_media_kind(reply))
     except Exception as e:
         print(f"Reply orqali media saqlashda xatolik: {e}")
 
