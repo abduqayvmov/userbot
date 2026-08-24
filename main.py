@@ -228,7 +228,7 @@ async def on_message_deleted(event):
             continue
         any_removed = True
         sender_id = data["sender_id"]
-        sender_link = mention_html(str(sender_id), sender_id) if sender_id else "Noma'lum"
+        sender_link = f"({mention_html('Foydalanuvchi niki', sender_id)})" if sender_id else "Noma'lum"
 
         caption = (
             f"#delete\n"
@@ -274,7 +274,7 @@ async def save_media_via_reply(event):
     is_sticker = bool(reply.sticker)
     try:
         sender_id = reply.sender_id
-        sender_link = mention_html(str(sender_id), sender_id) if sender_id else "Noma'lum"
+        sender_link = f"({mention_html('Foydalanuvchi niki', sender_id)})" if sender_id else "Noma'lum"
         if is_round:
             kind = "Aylana video"
         elif is_voice:
