@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import asyncio
@@ -7,9 +8,10 @@ from datetime import datetime
 import requests
 from flask import Flask
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import EditAdminRequest
+from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
 
@@ -25,6 +27,9 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
 CACHE_MAX_ENTRIES = 3000
 CACHE_INDEX_FILE = os.path.join(CACHE_DIR, "cache_index.json")
+WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
+USERNAME_CHECK_INTERVAL = 300  # 5 daqiqa
+USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
 # shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
@@ -74,6 +79,30 @@ def load_cache_from_disk():
 
 load_cache_from_disk()
 
+watched_usernames = {}
+
+
+def save_watched_usernames():
+    try:
+        with open(WATCHED_USERNAMES_FILE, "w", encoding="utf-8") as f:
+            json.dump(watched_usernames, f)
+    except Exception as e:
+        print(f"Kuzatilayotgan username'larni saqlashda xatolik: {e}")
+
+
+def load_watched_usernames():
+    if not os.path.exists(WATCHED_USERNAMES_FILE):
+        return
+    try:
+        with open(WATCHED_USERNAMES_FILE, "r", encoding="utf-8") as f:
+            watched_usernames.update(json.load(f))
+        print(f"Kuzatilayotgan username'lar tiklandi: {len(watched_usernames)} ta.")
+    except Exception as e:
+        print(f"Kuzatilayotgan username'larni yuklashda xatolik: {e}")
+
+
+load_watched_usernames()
+
 
 def mention_html(name, user_id):
     safe_name = (name or "Noma'lum").replace("<", "").replace(">", "")
@@ -82,6 +111,20 @@ def mention_html(name, user_id):
 
 def is_media_message(message):
     return bool(message.photo or message.video or message.video_note or message.voice or message.sticker)
+
+
+def message_kind_emoji(message):
+    if message.video_note:
+        return "⭕"
+    if message.voice:
+        return "🎤"
+    if message.sticker:
+        return "🧩"
+    if message.video:
+        return "🎥"
+    if message.photo:
+        return "🖼"
+    return "💬"
 
 
 async def download_to_disk(message):
@@ -158,6 +201,7 @@ async def cache_private_messages(event):
             "chat_id": event.chat_id,
             "media_path": media_path,
             "is_round": is_round,
+            "kind_emoji": message_kind_emoji(event.message),
             "date": event.date,
             "cached_at": time.time(),
         }
@@ -193,7 +237,7 @@ async def on_message_deleted(event):
         caption = (
             f"#delete\n"
             f"O'chirilgan shaxsiy xabar\n"
-            f"Kimdan: {sender_link}\n"
+            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {data['text'] or '(matn yoq)'}"
         )
@@ -247,7 +291,7 @@ async def save_media_via_reply(event):
             kind = "Video"
         else:
             kind = "Rasm"
-        caption = f"#reply\n{kind} (reply orqali saqlandi)\nKimdan: {sender_link}"
+        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}"
         media_path = await download_to_disk(reply)
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
@@ -346,8 +390,8 @@ async def delete_my_messages(event):
         await safe_delete_messages(chat_id, ids_batch)
 
 
-# .dell / .делл - reply qilingan xabar + buyruqning o'zi o'chadi
-@client.on(events.NewMessage(pattern=r"^\.(dell|делл)$", outgoing=True))
+# .del / .дел - reply qilingan xabar + buyruqning o'zi o'chadi
+@client.on(events.NewMessage(pattern=r"^\.(del|дел)$", outgoing=True))
 async def delete_replied_message(event):
     reply = await event.get_reply_message()
     if not reply:
@@ -386,7 +430,7 @@ async def translate_message(event):
         await event.edit(f"Tarjima xatoligi: {e}")
 
 
-@client.on(events.NewMessage(pattern=r"^\.(kontakt|контакт)(?:\s+(.+))?$", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
     from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
     from telethon.tl.types import User as TgUser
@@ -402,7 +446,7 @@ async def check_mutual_contact(event):
             # chunki access_hash reply xabaridan avtomatik olinadi.
             entity = await reply.get_sender()
         else:
-            return await event.edit("Foydalanish: .kontakt @username yoki .kontakt ID (yoki reply qiling)")
+            return await event.edit("Foydalanish: .tek @username yoki .tek ID (yoki reply qiling)")
 
     await event.edit("Tekshirilmoqda...")
     temporarily_added = False
@@ -432,7 +476,7 @@ async def check_mutual_contact(event):
                     user = add_result.users[0]
                 temporarily_added = True
             except Exception as e:
-                print(f".kontakt: vaqtincha qoshishda xatolik: {e}")
+                print(f".tek: vaqtincha qoshishda xatolik: {e}")
 
         name = getattr(user, "first_name", None) or "Noma'lum"
         username = getattr(user, "username", None)
@@ -443,7 +487,7 @@ async def check_mutual_contact(event):
             try:
                 await client(DeleteContactsRequest(id=[entity]))
             except Exception as e:
-                print(f".kontakt: vaqtincha kontaktni olib tashlashda xatolik: {e}")
+                print(f".tek: vaqtincha kontaktni olib tashlashda xatolik: {e}")
 
         if is_mutual:
             status = "U sizni ham kontaktiga qo'shgan (o'zaro)."
@@ -469,7 +513,91 @@ async def check_mutual_contact(event):
         await event.edit(f"Xatolik: {e}")
 
 
-# .giftoff / .gifon - profildagi StarGift'larni yashirish/qayta ko'rsatish
+async def _resolve_username_status(username):
+    """Muvaffaqiyatli qaytsa - username hali band. Bo'sh bo'lsa
+    UsernameNotOccupiedError, yaroqsiz bo'lsa UsernameInvalidError ko'taradi."""
+    await client(ResolveUsernameRequest(username))
+
+
+# .user / .unuser - biror username bo'shab qolganida LOG_CHANNEL_ID'ga xabar beradi
+@client.on(events.NewMessage(pattern=r"^\.user(?:\s+(.+))?$", outgoing=True))
+async def watch_username(event):
+    raw = (event.pattern_match.group(1) or "").strip().lstrip("@")
+    if not raw:
+        return await event.edit("Foydalanish: .user @username")
+    username = raw.lower()
+    if not USERNAME_RE.match(username):
+        return await event.edit("Username formati noto'g'ri (5-32 belgi, harf bilan boshlanishi kerak).")
+    if not LOG_CHANNEL_ID:
+        return await event.edit("LOG_CHANNEL_ID sozlanmagan, bildirishnoma yuborib bo'lmaydi.")
+    if username in watched_usernames:
+        return await event.edit(f"@{username} allaqachon kuzatuvda.")
+    try:
+        await _resolve_username_status(username)
+    except UsernameNotOccupiedError:
+        return await event.edit(f"@{username} hozirning o'zida bo'sh ekan, kuzatuvga hojat yo'q.")
+    except UsernameInvalidError:
+        return await event.edit("Bunday username mavjud emas.")
+    except Exception as e:
+        return await event.edit(f"Xatolik: {e}")
+
+    watched_usernames[username] = {"added_at": time.time()}
+    save_watched_usernames()
+    await event.edit(f"👀 @{username} kuzatuvga qo'shildi (hozir band). Bo'shab qolsa {LOG_CHANNEL_ID}'ga xabar beraman.")
+
+
+@client.on(events.NewMessage(pattern=r"^\.unuser(?:\s+(.+))?$", outgoing=True))
+async def unwatch_username(event):
+    raw = (event.pattern_match.group(1) or "").strip().lstrip("@")
+    username = raw.lower()
+    if not username or username not in watched_usernames:
+        return await event.edit("Bu username kuzatuvda emas edi.")
+    watched_usernames.pop(username, None)
+    save_watched_usernames()
+    await event.edit(f"@{username} kuzatuvdan olib tashlandi.")
+
+
+async def check_watched_usernames():
+    if not watched_usernames or not LOG_CHANNEL_ID:
+        return
+    freed = []
+    for username in list(watched_usernames.keys()):
+        try:
+            await _resolve_username_status(username)
+        except UsernameNotOccupiedError:
+            freed.append(username)
+        except UsernameInvalidError:
+            print(f".user: @{username} - yaroqsiz username, kuzatuvdan olib tashlandi.")
+            watched_usernames.pop(username, None)
+        except FloodWaitError as e:
+            wait_time = e.seconds + 2
+            print(f".user: FloodWait, {wait_time} soniya kutilmoqda...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            print(f".user: @{username} tekshirishda xatolik: {e}")
+        await asyncio.sleep(2)  # so'rovlar orasida biroz kutish, flood'ga tushmaslik uchun
+
+    for username in freed:
+        watched_usernames.pop(username, None)
+        try:
+            await client.send_message(
+                LOG_CHANNEL_ID,
+                f"🎉 #username_boshaldi\n@{username} endi band emas, hozir bo'sh!",
+            )
+        except Exception as e:
+            print(f".user: bildirishnoma yuborishda xatolik: {e}")
+
+    if freed:
+        save_watched_usernames()
+
+
+async def periodic_username_check():
+    while True:
+        await asyncio.sleep(USERNAME_CHECK_INTERVAL)
+        await check_watched_usernames()
+
+
+# .goff / .gon - profildagi StarGift'larni yashirish/qayta ko'rsatish
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest, SaveStarGiftRequest
 from telethon.tl.types import InputSavedStarGiftUser
 
@@ -494,8 +622,8 @@ async def _fetch_all_saved_gifts():
     return all_gifts
 
 
-# 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .giftoff
-@client.on(events.NewMessage(pattern=r"^\.giftoff$", outgoing=True))
+# 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .goff
+@client.on(events.NewMessage(pattern=r"^\.goff$", outgoing=True))
 async def hide_all_gifts(event):
     await event.edit("🔄 Barcha hadyalar ro'yxati yuklanmoqda, kuting...")
 
@@ -528,8 +656,8 @@ async def hide_all_gifts(event):
         await event.edit(f"❌ Hadyalarni yashirishda xatolik yuz berdi: {str(e)}")
 
 
-# 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gifon
-@client.on(events.NewMessage(pattern=r"^\.gifon$", outgoing=True))
+# 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gon
+@client.on(events.NewMessage(pattern=r"^\.gon$", outgoing=True))
 async def show_all_gifts(event):
     await event.edit("🔄 Barcha yashirilgan hadyalar ro'yxati yuklanmoqda...")
 
@@ -577,6 +705,7 @@ def run_fake_server():
 async def main():
     threading.Thread(target=run_fake_server, daemon=True).start()
     asyncio.create_task(periodic_cleanup())
+    asyncio.create_task(periodic_username_check())
     await client.start()
     print("Userbot ishga tushdi.")
     await client.run_until_disconnected()
