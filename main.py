@@ -632,10 +632,7 @@ async def _claim_and_notify(username):
         status_text = f"✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
     except Exception as e:
         status_text = f"⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
-    try:
-        await client.send_message(LOG_CHANNEL_ID, f"🎉 #username_boshaldi\n{status_text}")
-    except Exception as e:
-        print(f".user: bildirishnoma yuborishda xatolik: {e}")
+    bot_api_send_message(f"🎉 #username_boshaldi\n{status_text}")
 
 
 async def check_watched_usernames():
