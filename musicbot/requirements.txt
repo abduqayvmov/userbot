@@ -1,0 +1,6 @@
+aiogram==3.13.1
+yt-dlp==2024.10.7
+mutagen==1.47.0
+imageio-ffmpeg==0.5.1
+requests>=2.32.0
+flask==3.0.3
