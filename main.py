@@ -155,43 +155,44 @@ def message_kind_emoji(message):
     return MEDIA_KIND_EMOJI.get(message_media_kind(message), "💬")
 
 
+# YANGI VA TO'G'RILANGAN FUNKSIYA (Userbot orqali yuborish):
 def send_log_message(caption, media_path=None, media_kind=None):
-    """LOG_CHANNEL_ID'ga Bot API orqali yuboradi (Telethon/MTProto orqali emas) -
-    shunda tg://user?id= mention'lari yuboruvchining maxfiylik sozlamasidan
-    qat'iy nazar har doim bosiladigan bo'lib qoladi. Botni kanalga admin
-    qilib qo'shish kerak."""
-    if not BOT_TOKEN or not LOG_CHANNEL_ID:
+    """Xabarlarni log kanalga Bot API orqali emas, Telethon (client) orqali yuboramiz.
+    Shunda tg://user?id= mention'lari (taglar) har doim va har qanday foydalanuvchi uchun 
+    100% ishlaydi va ko'k havola bo'lib chiqadi."""
+    if not LOG_CHANNEL_ID:
         return
     try:
+        # Telethon asinxron ishlagani uchun oddiy funksiya ichidan chaqirishda 
+        # joriy event_loop'dan foydalanamiz
+        loop = asyncio.get_event_loop()
+        
         if media_path and os.path.exists(media_path):
-            method, field = BOT_API_METHOD_BY_KIND.get(media_kind, ("sendDocument", "document"))
-            with open(media_path, "rb") as f:
-                if method == "sendSticker":
-                    resp = requests.post(
-                        f"{BOT_API_URL}/sendSticker",
-                        data={"chat_id": LOG_CHANNEL_ID},
-                        files={"sticker": f},
-                        timeout=60,
-                    )
-                else:
-                    resp = requests.post(
-                        f"{BOT_API_URL}/{method}",
-                        data={"chat_id": LOG_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"},
-                        files={field: f},
-                        timeout=60,
-                    )
-            if not resp.ok:
-                print(f"Bot API {method} xatolik: {resp.status_code} {resp.text}")
-            if method == "sendSticker":
-                bot_api_send_message(caption)
+            # Agar media fayl bo'lsa (rasm, video, ovoz, stiker)
+            asyncio.run_coroutine_threadsafe(
+                client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, parse_mode="html"),
+                loop
+            )
+            # Stiker holatida matnni alohida yuborish kerak bo'lishi mumkin (agar stiker caption qo'llab-quvvatlamasa)
+            if media_kind == "sticker":
+                asyncio.run_coroutine_threadsafe(
+                    client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html"),
+                    loop
+                )
+            # Vaqtinchalik faylni o'chirish
             try:
                 os.remove(media_path)
             except Exception:
                 pass
         else:
-            bot_api_send_message(caption)
+            # Faqat matnli xabar bo'lsa
+            asyncio.run_coroutine_threadsafe(
+                client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html"),
+                loop
+            )
     except Exception as e:
-        print(f"Bot API'ga yuborishda xatolik: {e}")
+        print(f"Log kanalga Userbot orqali yuborishda xatolik: {e}")
+
 
 
 def bot_api_send_message(text):
