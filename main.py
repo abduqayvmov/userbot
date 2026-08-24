@@ -234,11 +234,12 @@ async def on_message_deleted(event):
             sender = None
         sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
         sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
+        sender_id_text = f" (ID: {data['sender_id']})" if data["sender_id"] else ""
 
         caption = (
             f"#delete\n"
             f"O'chirilgan shaxsiy xabar\n"
-            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}\n"
+            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}{sender_id_text}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {data['text'] or '(matn yoq)'}"
         )
@@ -282,6 +283,7 @@ async def save_media_via_reply(event):
         sender_name = getattr(sender, "first_name", None) or "Noma'lum"
         sender_id = getattr(sender, "id", None) or reply.sender_id
         sender_link = mention_html(sender_name, sender_id) if sender_id else sender_name
+        sender_id_text = f" (ID: {sender_id})" if sender_id else ""
         if is_round:
             kind = "Aylana video"
         elif is_voice:
@@ -292,7 +294,7 @@ async def save_media_via_reply(event):
             kind = "Video"
         else:
             kind = "Rasm"
-        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}"
+        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}{sender_id_text}"
         media_path = await download_to_disk(reply)
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
