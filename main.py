@@ -6,6 +6,7 @@ import requests
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
@@ -13,6 +14,7 @@ from telethon.tl.types import ChatAdminRights
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = "antidelete_session"
+SESSION_STRING = os.getenv("SESSION_STRING", "")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 TARGET_LANG = "uz"
 
@@ -21,9 +23,13 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
 CACHE_MAX_ENTRIES = 3000
 
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+# Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
+# shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
-user_tags = {}
 
 
 def mention_html(name, user_id):
@@ -128,7 +134,11 @@ async def on_message_deleted(event):
         data = private_message_cache.pop(msg_id, None)
         if not data:
             continue
-        sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
+        try:
+            sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
+        except Exception as e:
+            print(f"Yuboruvchini aniqlashda xatolik: {e}")
+            sender = None
         sender_name = getattr(sender, "first_name", "Noma'lum") if sender else "Noma'lum"
         sender_link = mention_html(sender_name, data["sender_id"]) if data["sender_id"] else sender_name
 
@@ -216,7 +226,6 @@ async def add_admin_tag(event):
             ban_users=False, delete_messages=True, pin_messages=True, manage_call=True,
         )
         await client(EditAdminRequest(event.chat_id, target_id, rights, tag_text or "Admin"))
-        user_tags[target_id] = tag_text
         await event.edit(f"Admin qilindi. Teg: {tag_text or '(bosh)'}")
     except Exception as e:
         await event.edit(f"Xatolik: {e}")
@@ -237,7 +246,6 @@ async def remove_admin_tag(event):
             ban_users=False, delete_messages=False, pin_messages=False, manage_call=False,
         )
         await client(EditAdminRequest(event.chat_id, target_id, empty_rights, ""))
-        user_tags.pop(target_id, None)
         await event.edit("Admin va teg olib tashlandi.")
     except Exception as e:
         await event.edit(f"Xatolik: {e}")
@@ -402,9 +410,9 @@ async def check_mutual_contact(event):
         )
         await event.edit(result_text, parse_mode="html")
     except Exception as e:
-        if temporarily_added:
+        if temporarily_added and entity is not None:
             try:
-                await client(DeleteContactsRequest(id=[target]))
+                await client(DeleteContactsRequest(id=[entity]))
             except Exception:
                 pass
         await event.edit(f"Xatolik: {e}")
@@ -436,7 +444,7 @@ async def _fetch_all_saved_gifts():
 
 
 # 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .giftoff
-@client.on(events.NewMessage(pattern=r"\.giftoff", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^\.giftoff$", outgoing=True))
 async def hide_all_gifts(event):
     await event.edit("🔄 Barcha hadyalar ro'yxati yuklanmoqda, kuting...")
 
@@ -470,7 +478,7 @@ async def hide_all_gifts(event):
 
 
 # 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gifon
-@client.on(events.NewMessage(pattern=r"\.gifon", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^\.gifon$", outgoing=True))
 async def show_all_gifts(event):
     await event.edit("🔄 Barcha yashirilgan hadyalar ro'yxati yuklanmoqda...")
 
