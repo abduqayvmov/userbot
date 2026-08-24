@@ -6,7 +6,7 @@ import json
 import sqlite3
 import asyncio
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
 from flask import Flask
@@ -26,6 +26,11 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+DAILY_SUMMARY_HOUR = 0
+DAILY_SUMMARY_MINUTE = 5
 TARGET_LANG = "uz"
 TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
@@ -736,6 +741,100 @@ async def show_all_gifts(event):
         await event.edit(f"❌ Hadyalarni yoqishda xatolik: {str(e)}")
 
 
+# Kunlik #xulosa - yozishmalarni Gemini AI orqali tahlil qilib, log kanalga yuboradi
+def _tashkent_day_bounds_utc(days_ago):
+    """Berilgan necha kun oldingi Toshkent kunining boshi/oxirini UTC'da qaytaradi."""
+    target_date = (datetime.now(TASHKENT_TZ) - timedelta(days=days_ago)).date()
+    start_local = datetime.combine(target_date, datetime.min.time(), tzinfo=TASHKENT_TZ)
+    end_local = start_local + timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc), target_date
+
+
+def fetch_day_messages(start_utc, end_utc):
+    cur = db_conn.cursor()
+    cur.execute(
+        "SELECT chat_id, sender_id, text, media_kind FROM messages WHERE date >= ? AND date < ? ORDER BY chat_id, date",
+        (start_utc.isoformat(), end_utc.isoformat()),
+    )
+    return cur.fetchall()
+
+
+def call_gemini(prompt):
+    try:
+        resp = requests.post(
+            GEMINI_API_URL,
+            params={"key": GEMINI_API_KEY},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=60,
+        )
+        if not resp.ok:
+            print(f"Gemini API xatolik: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"Gemini API so'rovida xatolik: {e}")
+        return None
+
+
+async def generate_daily_summary():
+    if not GEMINI_API_KEY or not LOG_CHANNEL_ID:
+        return
+    start_utc, end_utc, target_date = _tashkent_day_bounds_utc(days_ago=1)
+    rows = fetch_day_messages(start_utc, end_utc)
+    if not rows:
+        return
+
+    me = await client.get_me()
+    my_id = me.id
+
+    chats = {}
+    for chat_id, sender_id, text, media_kind in rows:
+        if not text and not media_kind:
+            continue
+        label = "Men" if sender_id == my_id else f"ID:{sender_id}"
+        content = text or f"[{media_kind}]"
+        chats.setdefault(chat_id, []).append(f"{label}: {content}")
+
+    transcript_parts = []
+    total_chars = 0
+    max_chars = 12000
+    for chat_id, lines in chats.items():
+        chunk = f"--- Chat {chat_id} ---\n" + "\n".join(lines) + "\n"
+        if total_chars + len(chunk) > max_chars:
+            break
+        transcript_parts.append(chunk)
+        total_chars += len(chunk)
+
+    prompt = (
+        f"Quyida {target_date} kuni (Toshkent vaqti) bo'lgan Telegram yozishmalarim bor "
+        "(\"Men\" - o'zim, \"ID:...\" - suhbatdoshlar). Menga shu kunlik faoliyatim haqida "
+        "qisqa, umumiy xulosa yoz (o'zbek tilida, 5-8 gap): asosiy mavzular, kim bilan qanday "
+        "muloqot bo'lgani, umumiy kayfiyat. Faqat xulosani yoz, boshqa hech narsa qo'shma.\n\n"
+        + "\n".join(transcript_parts)
+    )
+
+    summary_text = call_gemini(prompt)
+    if not summary_text:
+        return
+
+    message = f"#xulosa\n📅 {target_date} kunlik xulosa\n\n{html.escape(summary_text)}"
+    bot_api_send_message(message[:4000])
+
+
+async def daily_summary_loop():
+    while True:
+        now = datetime.now(TASHKENT_TZ)
+        target = now.replace(hour=DAILY_SUMMARY_HOUR, minute=DAILY_SUMMARY_MINUTE, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await generate_daily_summary()
+        except Exception as e:
+            print(f"Kunlik xulosa yaratishda xatolik: {e}")
+
+
 fake_server = Flask(__name__)
 
 
@@ -752,6 +851,7 @@ def run_fake_server():
 async def main():
     threading.Thread(target=run_fake_server, daemon=True).start()
     asyncio.create_task(periodic_username_check())
+    asyncio.create_task(daily_summary_loop())
     await client.start()
     print("Userbot ishga tushdi.")
     await client.run_until_disconnected()
