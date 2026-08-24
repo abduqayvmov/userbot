@@ -1,7 +1,9 @@
 import os
 import time
+import json
 import asyncio
 import threading
+from datetime import datetime
 import requests
 from flask import Flask
 from telethon import TelegramClient, events
@@ -22,6 +24,7 @@ CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 2  # 2 kun
 CACHE_MAX_ENTRIES = 3000
+CACHE_INDEX_FILE = os.path.join(CACHE_DIR, "cache_index.json")
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
 # shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
@@ -30,6 +33,46 @@ if SESSION_STRING:
 else:
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 private_message_cache = {}
+
+
+def _serialize_cache_entry(data):
+    entry = dict(data)
+    entry["date"] = data["date"].isoformat() if data.get("date") else None
+    return entry
+
+
+def _deserialize_cache_entry(entry):
+    data = dict(entry)
+    data["date"] = datetime.fromisoformat(entry["date"]) if entry.get("date") else None
+    return data
+
+
+def save_cache_to_disk():
+    """Keshni diskka yozadi - jarayon qayta ishga tushganda (masalan xatolikdan
+    keyin qayta ko'tarilganda) xabarlar keshi yo'qolmasligi uchun. Konteyner
+    butunlay qayta qurilganda (masalan Render'da yangi deploy) diskning o'zi
+    ham tozalanadi, bu holatda kesh baribir bo'sh boshlanadi."""
+    try:
+        with open(CACHE_INDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): _serialize_cache_entry(v) for k, v in private_message_cache.items()}, f)
+    except Exception as e:
+        print(f"Keshni diskka saqlashda xatolik: {e}")
+
+
+def load_cache_from_disk():
+    if not os.path.exists(CACHE_INDEX_FILE):
+        return
+    try:
+        with open(CACHE_INDEX_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for key, entry in raw.items():
+            private_message_cache[int(key)] = _deserialize_cache_entry(entry)
+        print(f"Kesh diskdan tiklandi: {len(private_message_cache)} ta yozuv.")
+    except Exception as e:
+        print(f"Keshni diskdan yuklashda xatolik: {e}")
+
+
+load_cache_from_disk()
 
 
 def mention_html(name, user_id):
@@ -91,6 +134,8 @@ def cleanup_old_cache():
             except Exception:
                 pass
 
+    save_cache_to_disk()
+
 
 async def periodic_cleanup():
     while True:
@@ -124,16 +169,19 @@ async def cache_private_messages(event):
                     os.remove(old_data["media_path"])
                 except Exception:
                     pass
+        save_cache_to_disk()
 
 
 @client.on(events.MessageDeleted())
 async def on_message_deleted(event):
     if not LOG_CHANNEL_ID:
         return
+    any_removed = False
     for msg_id in event.deleted_ids:
         data = private_message_cache.pop(msg_id, None)
         if not data:
             continue
+        any_removed = True
         try:
             sender = await client.get_entity(data["sender_id"]) if data["sender_id"] else None
         except Exception as e:
@@ -163,6 +211,9 @@ async def on_message_deleted(event):
                 await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
         except Exception as e:
             print(f"Log kanalga yuborishda xatolik: {e}")
+
+    if any_removed:
+        save_cache_to_disk()
 
 
 # Media reply orqali saqlash - shaxsiy chat, guruh va kanallarda ishlaydi
