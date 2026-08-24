@@ -402,9 +402,9 @@ async def check_mutual_contact(event):
         )
         await event.edit(result_text, parse_mode="html")
     except Exception as e:
-        if temporarily_added:
+        if temporarily_added and entity is not None:
             try:
-                await client(DeleteContactsRequest(id=[target]))
+                await client(DeleteContactsRequest(id=[entity]))
             except Exception:
                 pass
         await event.edit(f"Xatolik: {e}")
@@ -436,7 +436,7 @@ async def _fetch_all_saved_gifts():
 
 
 # 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .giftoff
-@client.on(events.NewMessage(pattern=r"\.giftoff", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^\.giftoff$", outgoing=True))
 async def hide_all_gifts(event):
     await event.edit("🔄 Barcha hadyalar ro'yxati yuklanmoqda, kuting...")
 
@@ -470,7 +470,7 @@ async def hide_all_gifts(event):
 
 
 # 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gifon
-@client.on(events.NewMessage(pattern=r"\.gifon", outgoing=True))
+@client.on(events.NewMessage(pattern=r"^\.gifon$", outgoing=True))
 async def show_all_gifts(event):
     await event.edit("🔄 Barcha yashirilgan hadyalar ro'yxati yuklanmoqda...")
 
