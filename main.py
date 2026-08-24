@@ -228,12 +228,21 @@ async def on_message_deleted(event):
             continue
         any_removed = True
         sender_id = data["sender_id"]
-        sender_link = f"({mention_html('Foydalanuvchi niki', sender_id)})" if sender_id else "Noma'lum"
+        try:
+            sender = await client.get_entity(sender_id) if sender_id else None
+        except Exception as e:
+            print(f"Yuboruvchini aniqlashda xatolik: {e}")
+            sender = None
+        sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+        sender_username = getattr(sender, "username", None)
+        user_part = f"@{sender_username}" if sender_username else "yo'q"
+        sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+        id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
 
         caption = (
             f"#delete\n"
             f"O'chirilgan shaxsiy xabar\n"
-            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}\n"
+            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}{id_part}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {data['text'] or '(matn yoq)'}"
         )
@@ -273,8 +282,13 @@ async def save_media_via_reply(event):
     is_voice = bool(reply.voice)
     is_sticker = bool(reply.sticker)
     try:
-        sender_id = reply.sender_id
-        sender_link = f"({mention_html('Foydalanuvchi niki', sender_id)})" if sender_id else "Noma'lum"
+        sender = await reply.get_sender()
+        sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+        sender_username = getattr(sender, "username", None)
+        sender_id = getattr(sender, "id", None) or reply.sender_id
+        user_part = f"@{sender_username}" if sender_username else "yo'q"
+        sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+        id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
         if is_round:
             kind = "Aylana video"
         elif is_voice:
@@ -285,7 +299,7 @@ async def save_media_via_reply(event):
             kind = "Video"
         else:
             kind = "Rasm"
-        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}"
+        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}{id_part}"
         media_path = await download_to_disk(reply)
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
