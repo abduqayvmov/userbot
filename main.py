@@ -22,6 +22,8 @@ API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = "antidelete_session"
 SESSION_STRING = os.getenv("SESSION_STRING", "")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TARGET_LANG = "uz"
 
 CACHE_DIR = "/tmp/antidelete_cache"
@@ -115,18 +117,90 @@ def is_media_message(message):
     return bool(message.photo or message.video or message.video_note or message.voice or message.sticker)
 
 
-def message_kind_emoji(message):
+MEDIA_KIND_EMOJI = {
+    "video_note": "⭕",
+    "voice": "🎤",
+    "sticker": "🧩",
+    "video": "🎥",
+    "photo": "🖼",
+}
+BOT_API_METHOD_BY_KIND = {
+    "video_note": ("sendVideoNote", "video_note"),
+    "voice": ("sendVoice", "voice"),
+    "sticker": ("sendSticker", "sticker"),
+    "video": ("sendVideo", "video"),
+    "photo": ("sendPhoto", "photo"),
+}
+
+
+def message_media_kind(message):
     if message.video_note:
-        return "⭕"
+        return "video_note"
     if message.voice:
-        return "🎤"
+        return "voice"
     if message.sticker:
-        return "🧩"
+        return "sticker"
     if message.video:
-        return "🎥"
+        return "video"
     if message.photo:
-        return "🖼"
-    return "💬"
+        return "photo"
+    return None
+
+
+def message_kind_emoji(message):
+    return MEDIA_KIND_EMOJI.get(message_media_kind(message), "💬")
+
+
+def send_log_message(caption, media_path=None, media_kind=None):
+    """LOG_CHANNEL_ID'ga Bot API orqali yuboradi (Telethon/MTProto orqali emas) -
+    shunda tg://user?id= mention'lari yuboruvchining maxfiylik sozlamasidan
+    qat'iy nazar har doim bosiladigan bo'lib qoladi. Botni kanalga admin
+    qilib qo'shish kerak."""
+    if not BOT_TOKEN or not LOG_CHANNEL_ID:
+        return
+    try:
+        if media_path and os.path.exists(media_path):
+            method, field = BOT_API_METHOD_BY_KIND.get(media_kind, ("sendDocument", "document"))
+            with open(media_path, "rb") as f:
+                if method == "sendSticker":
+                    resp = requests.post(
+                        f"{BOT_API_URL}/sendSticker",
+                        data={"chat_id": LOG_CHANNEL_ID},
+                        files={"sticker": f},
+                        timeout=60,
+                    )
+                else:
+                    resp = requests.post(
+                        f"{BOT_API_URL}/{method}",
+                        data={"chat_id": LOG_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"},
+                        files={field: f},
+                        timeout=60,
+                    )
+            if not resp.ok:
+                print(f"Bot API {method} xatolik: {resp.status_code} {resp.text}")
+            if method == "sendSticker":
+                bot_api_send_message(caption)
+            try:
+                os.remove(media_path)
+            except Exception:
+                pass
+        else:
+            bot_api_send_message(caption)
+    except Exception as e:
+        print(f"Bot API'ga yuborishda xatolik: {e}")
+
+
+def bot_api_send_message(text):
+    try:
+        resp = requests.post(
+            f"{BOT_API_URL}/sendMessage",
+            data={"chat_id": LOG_CHANNEL_ID, "text": text, "parse_mode": "HTML"},
+            timeout=15,
+        )
+        if not resp.ok:
+            print(f"Bot API sendMessage xatolik: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"Bot API sendMessage so'rovida xatolik: {e}")
 
 
 async def download_to_disk(message):
@@ -203,7 +277,7 @@ async def cache_private_messages(event):
             "chat_id": event.chat_id,
             "media_path": media_path,
             "is_round": is_round,
-            "kind_emoji": message_kind_emoji(event.message),
+            "media_kind": message_media_kind(event.message) if event.media else None,
             "date": event.date,
             "cached_at": time.time(),
         }
@@ -243,24 +317,11 @@ async def on_message_deleted(event):
         caption = (
             f"#delete\n"
             f"O'chirilgan shaxsiy xabar\n"
-            f"{data.get('kind_emoji', '💬')} Kimdan: {sender_link}{id_part}\n"
+            f"{MEDIA_KIND_EMOJI.get(data.get('media_kind'), '💬')} Kimdan: {sender_link}{id_part}\n"
             f"Vaqt: {data['date']}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
         )
-        try:
-            if data["media_path"] and os.path.exists(data["media_path"]):
-                await client.send_file(
-                    LOG_CHANNEL_ID, data["media_path"], caption=caption,
-                    video_note=data["is_round"], parse_mode="html",
-                )
-                try:
-                    os.remove(data["media_path"])
-                except Exception:
-                    pass
-            else:
-                await client.send_message(LOG_CHANNEL_ID, caption, parse_mode="html")
-        except Exception as e:
-            print(f"Log kanalga yuborishda xatolik: {e}")
+        send_log_message(caption, data["media_path"], data.get("media_kind"))
 
     if any_removed:
         save_cache_to_disk()
@@ -305,11 +366,7 @@ async def save_media_via_reply(event):
         if not media_path:
             print("Reply media: yuklab bolmadi (bo'sh)")
             return
-        await client.send_file(LOG_CHANNEL_ID, media_path, caption=caption, video_note=is_round, parse_mode="html")
-        try:
-            os.remove(media_path)
-        except Exception:
-            pass
+        send_log_message(caption, media_path, message_media_kind(reply))
     except Exception as e:
         print(f"Reply orqali media saqlashda xatolik: {e}")
 
