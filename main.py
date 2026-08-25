@@ -785,14 +785,23 @@ async def check_watched_usernames():
         try:
             await _resolve_username_status(username)
         except UsernameNotOccupiedError:
-            watched_usernames.pop(username, None)
-            save_watched_usernames()
             try:
                 await client(UpdateUsernameRequest(username))
-                status_text = f"✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
+                watched_usernames.pop(username, None)
+                save_watched_usernames()
+                bot_api_send_message(
+                    f"🎉 #username_boshaldi\n✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
+                )
+            except FloodWaitError as e:
+                # Hali ham bo'sh, lekin akkount o'zi flood-cheklovida - kuzatuvdan
+                # olib tashlamaymiz, cheklov tugagach keyingi tsiklda qayta urinamiz.
+                print(f".user: @{username} bo'sh, lekin FloodWait ({e.seconds}s) - keyinroq qayta urinaman.")
             except Exception as e:
-                status_text = f"⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
-            bot_api_send_message(f"🎉 #username_boshaldi\n{status_text}")
+                watched_usernames.pop(username, None)
+                save_watched_usernames()
+                bot_api_send_message(
+                    f"🎉 #username_boshaldi\n⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
+                )
         except UsernameInvalidError:
             print(f".user: @{username} - yaroqsiz username, kuzatuvdan olib tashlandi.")
             watched_usernames.pop(username, None)
