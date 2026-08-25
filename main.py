@@ -834,15 +834,26 @@ async def check_watched_profiles():
                 changes.append(f"Username: {old_user} → {new_user}")
             if bio != snap.get("bio"):
                 changes.append(f"Bio: {html.escape(snap.get('bio') or '-')} → {html.escape(bio)}")
-            if photo_id != snap.get("photo_id"):
+            photo_changed = photo_id != snap.get("photo_id")
+            if photo_changed:
                 changes.append("Profil rasmi o'zgardi")
 
             if changes:
                 sender_link = mention_html(name, entity.id)
                 user_part = f"@{username}" if username else "yo'q"
-                bot_api_send_message(
-                    f"🔔 #profil_ozgardi\n{sender_link}:\nuser: {user_part}\n" + "\n".join(changes)
-                )
+                caption = f"🔔 #profil_ozgardi\n{sender_link}:\nuser: {user_part}\n" + "\n".join(changes)
+                photo_path = None
+                if photo_changed:
+                    try:
+                        photo_path = await client.download_profile_photo(
+                            entity, file=os.path.join(CACHE_DIR, f"profile_{entity.id}_{int(time.time())}.jpg")
+                        )
+                    except Exception as e:
+                        print(f".watch: profil rasmini yuklashda xatolik: {e}")
+                if photo_path:
+                    send_log_message(caption, photo_path, "photo")
+                else:
+                    bot_api_send_message(caption)
 
             watched_profiles[uid_str] = {"name": name, "bio": bio, "photo_id": photo_id, "username": username}
             save_watched_profiles()
