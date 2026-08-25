@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import requests
 from flask import Flask
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError
+from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError, UsernameOccupiedError
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateUsernameRequest
 from telethon.tl.functions.channels import EditAdminRequest
@@ -773,30 +773,19 @@ async def unwatch_profile(event):
     await event.edit("Profil kuzatuvidan olib tashlandi.")
 
 
-async def _claim_and_notify(username):
-    """Bo'shab qolgan username'ni darhol profilga o'rnatishga urinadi va natijani
-    LOG_CHANNEL_ID'ga yuboradi. Boshqa kimdir bir zumda ulgurib olgan bo'lishi mumkin -
-    bu holat ham xabarda ko'rsatiladi."""
-    try:
-        await client(UpdateUsernameRequest(username))
-        status_text = f"✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
-    except Exception as e:
-        status_text = f"⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
-    bot_api_send_message(f"🎉 #username_boshaldi\n{status_text}")
-
-
 async def check_watched_usernames():
+    """Har bir kuzatilayotgan username'ni to'g'ridan-to'g'ri o'rnatishga urinadi
+    (avval "bo'shmi?" deb alohida so'rov yubormaydi) - shunda ikkita so'rov o'rniga
+    bitta so'rov bo'ladi va boshqa "sniper" bot/skriptlar bilan poyga (race condition)
+    oynasi qisqaradi. Hali band bo'lsa, Telegram shunchaki xatolik qaytaradi -
+    bu normal holat, xatolik sifatida ko'rsatilmaydi."""
     if not watched_usernames or not LOG_CHANNEL_ID:
         return
     for username in list(watched_usernames.keys()):
         try:
-            await _resolve_username_status(username)
-        except UsernameNotOccupiedError:
-            # Bo'shagan zahoti kuzatuvdan chiqaramiz va darhol o'zlashtirishga urinamiz -
-            # tezlik muhim bo'lgani uchun keyingi usernamega o'tishdan oldin shu yerda bajaramiz.
-            watched_usernames.pop(username, None)
-            save_watched_usernames()
-            await _claim_and_notify(username)
+            await client(UpdateUsernameRequest(username))
+        except UsernameOccupiedError:
+            pass  # hali band - normal holat, keyingi tekshiruvda davom etamiz
         except UsernameInvalidError:
             print(f".user: @{username} - yaroqsiz username, kuzatuvdan olib tashlandi.")
             watched_usernames.pop(username, None)
@@ -807,6 +796,10 @@ async def check_watched_usernames():
             await asyncio.sleep(wait_time)
         except Exception as e:
             print(f".user: @{username} tekshirishda xatolik: {e}")
+        else:
+            watched_usernames.pop(username, None)
+            save_watched_usernames()
+            bot_api_send_message(f"🎉 #username_boshaldi\n✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!")
         await asyncio.sleep(1)  # so'rovlar orasida biroz kutish, flood'ga tushmaslik uchun
 
 
