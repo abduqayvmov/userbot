@@ -325,6 +325,8 @@ async def on_message_deleted(event):
         except Exception as e:
             print(f"Yuboruvchini aniqlashda xatolik: {e}")
             sender = None
+        if sender is not None and getattr(sender, "bot", False):
+            continue
         sender_name = getattr(sender, "first_name", None) or "Noma'lum"
         sender_username = getattr(sender, "username", None)
         user_part = f"@{sender_username}" if sender_username else "yo'q"
@@ -369,6 +371,8 @@ async def on_message_edited(event):
     except Exception as e:
         print(f"Yuboruvchini aniqlashda xatolik: {e}")
         sender = None
+    if sender is not None and getattr(sender, "bot", False):
+        return
     sender_name = getattr(sender, "first_name", None) or "Noma'lum"
     sender_username = getattr(sender, "username", None)
     user_part = f"@{sender_username}" if sender_username else "yo'q"
@@ -396,12 +400,11 @@ async def save_media_via_reply(event):
     reply = await event.get_reply_message()
     if not reply or not reply.media or reply.out:
         return
-    if not is_media_message(reply):
+    if not is_media_message(reply) or reply.sticker:
         return
     is_video = bool(reply.video)
     is_round = bool(reply.video_note)
     is_voice = bool(reply.voice)
-    is_sticker = bool(reply.sticker)
     try:
         sender = await reply.get_sender()
         sender_name = getattr(sender, "first_name", None) or "Noma'lum"
@@ -414,8 +417,6 @@ async def save_media_via_reply(event):
             kind = "Aylana video"
         elif is_voice:
             kind = "Ovozli xabar"
-        elif is_sticker:
-            kind = "Stiker"
         elif is_video:
             kind = "Video"
         else:
@@ -822,10 +823,15 @@ async def check_watched_profiles():
             name = f"{entity.first_name or ''} {entity.last_name or ''}".strip() or "Noma'lum"
             bio = full.full_user.about or ""
             photo_id = getattr(entity.photo, "photo_id", None) if entity.photo else None
+            username = getattr(entity, "username", None)
 
             changes = []
             if name != snap.get("name"):
                 changes.append(f"Ism: {html.escape(snap.get('name') or '-')} → {html.escape(name)}")
+            if username != snap.get("username"):
+                old_user = f"@{snap.get('username')}" if snap.get("username") else "-"
+                new_user = f"@{username}" if username else "-"
+                changes.append(f"Username: {old_user} → {new_user}")
             if bio != snap.get("bio"):
                 changes.append(f"Bio: {html.escape(snap.get('bio') or '-')} → {html.escape(bio)}")
             if photo_id != snap.get("photo_id"):
@@ -833,12 +839,12 @@ async def check_watched_profiles():
 
             if changes:
                 sender_link = mention_html(name, entity.id)
-                bot_api_send_message(f"🔔 #profil_ozgardi\n{sender_link}:\n" + "\n".join(changes))
+                user_part = f"@{username}" if username else "yo'q"
+                bot_api_send_message(
+                    f"🔔 #profil_ozgardi\n{sender_link}:\nuser: {user_part}\n" + "\n".join(changes)
+                )
 
-            watched_profiles[uid_str] = {
-                "name": name, "bio": bio, "photo_id": photo_id,
-                "username": getattr(entity, "username", None),
-            }
+            watched_profiles[uid_str] = {"name": name, "bio": bio, "photo_id": photo_id, "username": username}
             save_watched_profiles()
         except FloodWaitError as e:
             wait_time = e.seconds + 2
