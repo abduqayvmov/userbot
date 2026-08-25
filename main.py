@@ -5,6 +5,7 @@ import time
 import json
 import sqlite3
 import asyncio
+import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -18,6 +19,9 @@ from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
+
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+logging.getLogger("telethon").setLevel(logging.INFO)
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -1076,9 +1080,15 @@ async def main():
     asyncio.create_task(periodic_username_check())
     asyncio.create_task(periodic_profile_check())
     asyncio.create_task(daily_summary_loop())
-    await client.start()
-    print("Userbot ishga tushdi.")
-    await client.run_until_disconnected()
+    while True:
+        try:
+            await client.start()
+            print("Userbot ishga tushdi.")
+            await client.run_until_disconnected()
+        except Exception as e:
+            print(f"Telegram ulanishida xatolik: {e}")
+        print("Telegram bilan aloqa uzildi, 5 soniyadan keyin qayta ulanishga urinaman...")
+        await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
