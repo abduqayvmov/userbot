@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import requests
 from flask import Flask
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError, UsernameOccupiedError
+from telethon.errors import FloodWaitError, UsernameNotOccupiedError, UsernameInvalidError
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateUsernameRequest
 from telethon.tl.functions.channels import EditAdminRequest
@@ -774,32 +774,35 @@ async def unwatch_profile(event):
 
 
 async def check_watched_usernames():
-    """Har bir kuzatilayotgan username'ni to'g'ridan-to'g'ri o'rnatishga urinadi
-    (avval "bo'shmi?" deb alohida so'rov yubormaydi) - shunda ikkita so'rov o'rniga
-    bitta so'rov bo'ladi va boshqa "sniper" bot/skriptlar bilan poyga (race condition)
-    oynasi qisqaradi. Hali band bo'lsa, Telegram shunchaki xatolik qaytaradi -
-    bu normal holat, xatolik sifatida ko'rsatilmaydi."""
+    """Har bir kuzatilayotgan username uchun avval arzon (o'qish) ResolveUsernameRequest
+    bilan bo'shligini tekshiradi, faqat bo'sh bo'lib chiqsa UpdateUsernameRequest (yozish)
+    bilan o'rnatishga urinadi. Har safar to'g'ridan-to'g'ri yozish so'rovini yuborish
+    Telegram'ning maxsus flood-himoyasiga tutilib, uzoq (masalan 50+ daqiqalik)
+    to'xtatib qo'yishga olib kelgani sababli bu usuldan voz kechildi."""
     if not watched_usernames or not LOG_CHANNEL_ID:
         return
     for username in list(watched_usernames.keys()):
         try:
-            await client(UpdateUsernameRequest(username))
-        except UsernameOccupiedError:
-            pass  # hali band - normal holat, keyingi tekshiruvda davom etamiz
+            await _resolve_username_status(username)
+        except UsernameNotOccupiedError:
+            watched_usernames.pop(username, None)
+            save_watched_usernames()
+            try:
+                await client(UpdateUsernameRequest(username))
+                status_text = f"✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!"
+            except Exception as e:
+                status_text = f"⚠️ @{username} bo'shadi, lekin avtomatik o'rnatishda xatolik: {e}"
+            bot_api_send_message(f"🎉 #username_boshaldi\n{status_text}")
         except UsernameInvalidError:
             print(f".user: @{username} - yaroqsiz username, kuzatuvdan olib tashlandi.")
             watched_usernames.pop(username, None)
             save_watched_usernames()
         except FloodWaitError as e:
-            wait_time = e.seconds + 2
-            print(f".user: FloodWait, {wait_time} soniya kutilmoqda...")
+            wait_time = min(e.seconds + 2, 30)
+            print(f".user: FloodWait ({e.seconds}s talab qilindi), {wait_time} soniya kutib, davom etaman...")
             await asyncio.sleep(wait_time)
         except Exception as e:
             print(f".user: @{username} tekshirishda xatolik: {e}")
-        else:
-            watched_usernames.pop(username, None)
-            save_watched_usernames()
-            bot_api_send_message(f"🎉 #username_boshaldi\n✅ @{username} muvaffaqiyatli sizning profilingizga o'rnatildi!")
         await asyncio.sleep(1)  # so'rovlar orasida biroz kutish, flood'ga tushmaslik uchun
 
 
