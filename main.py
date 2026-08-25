@@ -821,7 +821,6 @@ async def check_watched_profiles():
             bio = full.full_user.about or ""
             photo_id = getattr(entity.photo, "photo_id", None) if entity.photo else None
             username = getattr(entity, "username", None)
-            print(f".watch debug uid={uid_str} old_bio={snap.get('bio')!r} new_bio={bio!r}")
 
             changes = []
             if name != snap.get("name"):
