@@ -40,7 +40,7 @@ CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
 WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
 WATCHED_PROFILES_FILE = os.path.join(CACHE_DIR, "watched_profiles.json")
 USERNAME_CHECK_INTERVAL = 15  # soniya
-PROFILE_CHECK_INTERVAL = 120  # soniya
+PROFILE_CHECK_INTERVAL = 30  # soniya
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
