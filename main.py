@@ -1,10 +1,8 @@
 import os
-import io
 import re
 import html
 import time
 import json
-import base64
 import sqlite3
 import asyncio
 import threading
@@ -44,8 +42,6 @@ WATCHED_PROFILES_FILE = os.path.join(CACHE_DIR, "watched_profiles.json")
 USERNAME_CHECK_INTERVAL = 15  # soniya
 PROFILE_CHECK_INTERVAL = 120  # soniya
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
-GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-GEMINI_IMAGE_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent"
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
 # shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
@@ -579,26 +575,6 @@ async def ask_ai(event):
     await event.edit(f"🤖 {answer}"[:4096])
 
 
-@client.on(events.NewMessage(pattern=r"^\.img(?:\s+([\s\S]+))?$", outgoing=True))
-async def generate_image(event):
-    if not GEMINI_API_KEY:
-        return await event.edit("GEMINI_API_KEY sozlanmagan.")
-
-    prompt = event.pattern_match.group(1)
-    if not prompt:
-        return await event.edit("Rasm uchun so'rov yozing: .img so'rov")
-
-    await event.edit("Rasm yaratilmoqda...")
-    image_bytes = await asyncio.to_thread(call_gemini_image, prompt)
-    if not image_bytes:
-        return await event.edit("Rasm yaratib bo'lmadi, keyinroq urinib ko'ring.")
-
-    photo = io.BytesIO(image_bytes)
-    photo.name = "image.png"
-    await client.send_file(event.chat_id, photo, caption=prompt[:1024])
-    await event.delete()
-
-
 @client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
     from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
@@ -1004,29 +980,6 @@ def call_gemini(prompt):
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         print(f"Gemini API so'rovida xatolik: {e}")
-        return None
-
-
-def call_gemini_image(prompt):
-    try:
-        resp = requests.post(
-            GEMINI_IMAGE_API_URL,
-            params={"key": GEMINI_API_KEY},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=60,
-        )
-        if not resp.ok:
-            print(f"Gemini rasm generatsiyasida xatolik: {resp.status_code} {resp.text}")
-            return None
-        data = resp.json()
-        parts = data["candidates"][0]["content"]["parts"]
-        for part in parts:
-            inline = part.get("inlineData") or part.get("inline_data")
-            if inline and inline.get("data"):
-                return base64.b64decode(inline["data"])
-        return None
-    except Exception as e:
-        print(f"Gemini rasm so'rovida xatolik: {e}")
         return None
 
 
