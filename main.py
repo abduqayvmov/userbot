@@ -1,8 +1,10 @@
 import os
+import io
 import re
 import html
 import time
 import json
+import base64
 import sqlite3
 import asyncio
 import threading
@@ -38,8 +40,12 @@ CACHE_DIR = "/tmp/antidelete_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
 WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
+WATCHED_PROFILES_FILE = os.path.join(CACHE_DIR, "watched_profiles.json")
 USERNAME_CHECK_INTERVAL = 15  # soniya
+PROFILE_CHECK_INTERVAL = 120  # soniya
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+GEMINI_IMAGE_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent"
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
 # shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
@@ -142,7 +148,30 @@ def load_watched_usernames():
         print(f"Kuzatilayotgan username'larni yuklashda xatolik: {e}")
 
 
+watched_profiles = {}
+
+
+def save_watched_profiles():
+    try:
+        with open(WATCHED_PROFILES_FILE, "w", encoding="utf-8") as f:
+            json.dump(watched_profiles, f)
+    except Exception as e:
+        print(f"Kuzatilayotgan profillarni saqlashda xatolik: {e}")
+
+
+def load_watched_profiles():
+    if not os.path.exists(WATCHED_PROFILES_FILE):
+        return
+    try:
+        with open(WATCHED_PROFILES_FILE, "r", encoding="utf-8") as f:
+            watched_profiles.update(json.load(f))
+        print(f"Kuzatilayotgan profillar tiklandi: {len(watched_profiles)} ta.")
+    except Exception as e:
+        print(f"Kuzatilayotgan profillarni yuklashda xatolik: {e}")
+
+
 load_watched_usernames()
+load_watched_profiles()
 
 
 def mention_html(name, user_id):
@@ -292,7 +321,7 @@ async def on_message_deleted(event):
         return
     for msg_id in event.deleted_ids:
         data = pop_cached_message(msg_id, event.chat_id)
-        if not data:
+        if not data or not data.get("is_private"):
             continue
         sender_id = data["sender_id"]
         try:
@@ -305,11 +334,10 @@ async def on_message_deleted(event):
         user_part = f"@{sender_username}" if sender_username else "yo'q"
         sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
         id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
-        chat_label = "shaxsiy xabar" if data.get("is_private") else f"guruh xabari (chat_id={data['chat_id']})"
 
         caption = (
             f"#delete\n"
-            f"O'chirilgan {chat_label}\n"
+            f"O'chirilgan shaxsiy xabar\n"
             f"{MEDIA_KIND_EMOJI.get(data.get('media_kind'), '💬')} Kimdan: {sender_link}{id_part}\n"
             f"Vaqt: {data['date'].astimezone(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
@@ -336,7 +364,7 @@ async def on_message_edited(event):
         date=old["date"] if old and old.get("date") else event.date,
     )
 
-    if not old_text or old_text == new_text:
+    if not event.is_private or not old_text or old_text == new_text:
         return
 
     sender_id = event.sender_id
@@ -350,11 +378,10 @@ async def on_message_edited(event):
     user_part = f"@{sender_username}" if sender_username else "yo'q"
     sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
     id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
-    chat_label = "shaxsiy xabar" if event.is_private else f"guruh xabari (chat_id={event.chat_id})"
 
     caption = (
         f"#edit\n"
-        f"Tahrirlangan {chat_label}\n"
+        f"Tahrirlangan shaxsiy xabar\n"
         f"✏️ Kimdan: {sender_link}{id_part}\n"
         f"Vaqt: {datetime.now(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Eski matn: {html.escape(old_text)}\n"
@@ -552,6 +579,26 @@ async def ask_ai(event):
     await event.edit(f"🤖 {answer}"[:4096])
 
 
+@client.on(events.NewMessage(pattern=r"^\.img(?:\s+([\s\S]+))?$", outgoing=True))
+async def generate_image(event):
+    if not GEMINI_API_KEY:
+        return await event.edit("GEMINI_API_KEY sozlanmagan.")
+
+    prompt = event.pattern_match.group(1)
+    if not prompt:
+        return await event.edit("Rasm uchun so'rov yozing: .img so'rov")
+
+    await event.edit("Rasm yaratilmoqda...")
+    image_bytes = await asyncio.to_thread(call_gemini_image, prompt)
+    if not image_bytes:
+        return await event.edit("Rasm yaratib bo'lmadi, keyinroq urinib ko'ring.")
+
+    photo = io.BytesIO(image_bytes)
+    photo.name = "image.png"
+    await client.send_file(event.chat_id, photo, caption=prompt[:1024])
+    await event.delete()
+
+
 @client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
 async def check_mutual_contact(event):
     from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
@@ -683,6 +730,68 @@ async def unwatch_username(event):
     await event.edit(f"@{username} kuzatuvdan olib tashlandi.")
 
 
+async def _resolve_watch_target(event, arg):
+    """Argument (username yoki id) yoki reply orqali foydalanuvchi entity'sini topadi."""
+    if arg:
+        arg = arg.strip().lstrip("@")
+        try:
+            target = int(arg) if arg.lstrip("-").isdigit() else arg
+            return await client.get_entity(target)
+        except Exception:
+            return None
+    reply = await event.get_reply_message()
+    if reply and reply.sender_id:
+        try:
+            return await reply.get_sender()
+        except Exception:
+            return None
+    return None
+
+
+# .watch / .unwatch - kuzatilayotgan foydalanuvchining ism/bio/profil rasmi
+# o'zgarishini LOG_CHANNEL_ID'ga xabar beradi
+@client.on(events.NewMessage(pattern=r"^\.watch(?:\s+(.+))?$", outgoing=True))
+async def watch_profile(event):
+    if not LOG_CHANNEL_ID:
+        return await event.edit("LOG_CHANNEL_ID sozlanmagan, bildirishnoma yuborib bo'lmaydi.")
+    entity = await _resolve_watch_target(event, event.pattern_match.group(1))
+    if not entity or not getattr(entity, "id", None):
+        return await event.edit("Foydalanuvchi topilmadi. Reply qiling yoki: .watch @username")
+
+    user_id = entity.id
+    try:
+        full = await client(GetFullUserRequest(entity))
+        bio = full.full_user.about or ""
+    except Exception:
+        bio = ""
+    name = f"{entity.first_name or ''} {entity.last_name or ''}".strip() or "Noma'lum"
+    photo_id = getattr(entity.photo, "photo_id", None) if entity.photo else None
+
+    watched_profiles[str(user_id)] = {
+        "name": name,
+        "bio": bio,
+        "photo_id": photo_id,
+        "username": getattr(entity, "username", None),
+    }
+    save_watched_profiles()
+    await event.edit(
+        f"👀 {mention_html(name, user_id)} profili kuzatuvga qo'shildi "
+        f"(ism/bio/rasm o'zgarsa {PROFILE_CHECK_INTERVAL} soniyada bir tekshirib xabar beraman).",
+        parse_mode="html",
+    )
+
+
+@client.on(events.NewMessage(pattern=r"^\.unwatch(?:\s+(.+))?$", outgoing=True))
+async def unwatch_profile(event):
+    entity = await _resolve_watch_target(event, event.pattern_match.group(1))
+    user_id = getattr(entity, "id", None) if entity else None
+    if not user_id or str(user_id) not in watched_profiles:
+        return await event.edit("Bu foydalanuvchi kuzatuvda emas edi.")
+    watched_profiles.pop(str(user_id), None)
+    save_watched_profiles()
+    await event.edit("Profil kuzatuvidan olib tashlandi.")
+
+
 async def _claim_and_notify(username):
     """Bo'shab qolgan username'ni darhol profilga o'rnatishga urinadi va natijani
     LOG_CHANNEL_ID'ga yuboradi. Boshqa kimdir bir zumda ulgurib olgan bo'lishi mumkin -
@@ -724,6 +833,50 @@ async def periodic_username_check():
     while True:
         await asyncio.sleep(USERNAME_CHECK_INTERVAL)
         await check_watched_usernames()
+
+
+async def check_watched_profiles():
+    if not watched_profiles or not LOG_CHANNEL_ID:
+        return
+    for uid_str in list(watched_profiles.keys()):
+        snap = watched_profiles.get(uid_str, {})
+        try:
+            entity = await client.get_entity(int(uid_str))
+            full = await client(GetFullUserRequest(entity))
+            name = f"{entity.first_name or ''} {entity.last_name or ''}".strip() or "Noma'lum"
+            bio = full.full_user.about or ""
+            photo_id = getattr(entity.photo, "photo_id", None) if entity.photo else None
+
+            changes = []
+            if name != snap.get("name"):
+                changes.append(f"Ism: {html.escape(snap.get('name') or '-')} → {html.escape(name)}")
+            if bio != snap.get("bio"):
+                changes.append(f"Bio: {html.escape(snap.get('bio') or '-')} → {html.escape(bio)}")
+            if photo_id != snap.get("photo_id"):
+                changes.append("Profil rasmi o'zgardi")
+
+            if changes:
+                sender_link = mention_html(name, entity.id)
+                bot_api_send_message(f"🔔 #profil_ozgardi\n{sender_link}:\n" + "\n".join(changes))
+
+            watched_profiles[uid_str] = {
+                "name": name, "bio": bio, "photo_id": photo_id,
+                "username": getattr(entity, "username", None),
+            }
+            save_watched_profiles()
+        except FloodWaitError as e:
+            wait_time = e.seconds + 2
+            print(f".watch: FloodWait, {wait_time} soniya kutilmoqda...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            print(f".watch: {uid_str} tekshirishda xatolik: {e}")
+        await asyncio.sleep(1)
+
+
+async def periodic_profile_check():
+    while True:
+        await asyncio.sleep(PROFILE_CHECK_INTERVAL)
+        await check_watched_profiles()
 
 
 # .goff / .gon - profildagi StarGift'larni yashirish/qayta ko'rsatish
@@ -854,6 +1007,29 @@ def call_gemini(prompt):
         return None
 
 
+def call_gemini_image(prompt):
+    try:
+        resp = requests.post(
+            GEMINI_IMAGE_API_URL,
+            params={"key": GEMINI_API_KEY},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=60,
+        )
+        if not resp.ok:
+            print(f"Gemini rasm generatsiyasida xatolik: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        parts = data["candidates"][0]["content"]["parts"]
+        for part in parts:
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                return base64.b64decode(inline["data"])
+        return None
+    except Exception as e:
+        print(f"Gemini rasm so'rovida xatolik: {e}")
+        return None
+
+
 async def generate_daily_summary():
     if not GEMINI_API_KEY or not LOG_CHANNEL_ID:
         return
@@ -928,6 +1104,7 @@ def run_fake_server():
 async def main():
     threading.Thread(target=run_fake_server, daemon=True).start()
     asyncio.create_task(periodic_username_check())
+    asyncio.create_task(periodic_profile_check())
     asyncio.create_task(daily_summary_loop())
     await client.start()
     print("Userbot ishga tushdi.")
