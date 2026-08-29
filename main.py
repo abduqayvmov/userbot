@@ -19,6 +19,9 @@ from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
+from telethon.tl.functions.channels import GetParticipantsRequest, EditBannedRequest
+from telethon.tl.types import ChannelParticipantsSearch, ChatBannedRights
+
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 logging.getLogger("telethon").setLevel(logging.INFO)
@@ -1056,6 +1059,128 @@ async def daily_summary_loop():
             await generate_daily_summary()
         except Exception as e:
             print(f"Kunlik xulosa yaratishda xatolik: {e}")
+
+# ============================================================
+# NAKRUTKA / FAKE AKKAUNT SKANER VA KICK QILISH
+# Ushbu blokni main.py oxiriga (client.run_until_disconnected() dan OLDIN) qo'shing.
+# Kerakli import'lar main.py boshiga qo'shilishi kerak (pastda ko'rsatilgan).
+# ============================================================
+
+# --- main.py FAYLINING BOSHIGA QO'SHILADIGAN IMPORT'LAR ---
+# from telethon.tl.functions.channels import GetParticipantsRequest, EditBannedRequest
+# from telethon.tl.types import ChannelParticipantsSearch, ChatBannedRights
+
+# Oxirgi skanerlash natijalarini xotirada saqlab turamiz: {chat_id: [user_id, ...]}
+last_fake_scan = {}
+
+
+def _is_suspicious(user):
+    """Fake/nakrutka akkaunt belgilari: profil rasmi yo'q, username yo'q,
+    bot emas, va o'zi (deleted account) emas."""
+    if getattr(user, "bot", False):
+        return False
+    if getattr(user, "deleted", False):
+        return False
+    has_photo = bool(getattr(user, "photo", None))
+    has_username = bool(getattr(user, "username", None))
+    if has_photo or has_username:
+        return False
+    return True
+
+
+@client.on(events.NewMessage(pattern=r"^\.(nakrutka|накрутка)$", outgoing=True))
+async def scan_fake_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat_id = event.chat_id
+    await event.edit("🔍 Guruh a'zolari skanerlanmoqda, kuting...")
+
+    suspicious = []
+    total = 0
+    offset = 0
+    limit = 200
+
+    try:
+        while True:
+            participants = await client(GetParticipantsRequest(
+                channel=chat_id,
+                filter=ChannelParticipantsSearch(""),
+                offset=offset,
+                limit=limit,
+                hash=0,
+            ))
+            if not participants.users:
+                break
+            for user in participants.users:
+                total += 1
+                if _is_suspicious(user):
+                    suspicious.append(user)
+            offset += len(participants.users)
+            if len(participants.users) < limit:
+                break
+            await asyncio.sleep(1)  # flood-wait'dan saqlanish
+    except FloodWaitError as e:
+        await event.edit(f"FloodWait: {e.seconds} soniya kutish kerak, keyinroq urinib ko'ring.")
+        return
+    except Exception as e:
+        await event.edit(f"Skanerlashda xatolik: {e}\n\n(Eslatma: bu komanda faqat supergroup/kanal turidagi guruhlarda ishlaydi, oddiy kichik guruhda ishlamasligi mumkin.)")
+        return
+
+    last_fake_scan[chat_id] = [u.id for u in suspicious]
+
+    if not suspicious:
+        return await event.edit(f"✅ Skanerlash tugadi. {total} a'zodan shubhali (nakrutka) akkaunt topilmadi.")
+
+    lines = [f"🕵️ #nakrutka_skaner\nGuruh: {chat_id}\nJami a'zo: {total}\nShubhali topildi: {len(suspicious)}\n"]
+    for u in suspicious[:50]:  # xabar juda uzun bo'lib ketmasligi uchun birinchi 50 tasi
+        name = f"{u.first_name or ''} {u.last_name or ''}".strip() or "Noma'lum"
+        lines.append(f"• {mention_html(name, u.id)} (id={u.id})")
+    if len(suspicious) > 50:
+        lines.append(f"... va yana {len(suspicious) - 50} ta (to'liq ro'yxat .kickfake bilan chiqariladi)")
+
+    caption = "\n".join(lines)
+    send_log_message(caption)
+
+    await event.edit(
+        f"✅ Skanerlash tugadi.\nJami a'zo: {total}\nShubhali (nakrutka) topildi: {len(suspicious)}\n\n"
+        f"To'liq ro'yxat LOG kanalga yuborildi.\n"
+        f"Hammasini chiqarish uchun: .kickfake"
+    )
+
+
+@client.on(events.NewMessage(pattern=r"^\.(kickfake|кикфейк)$", outgoing=True))
+async def kick_fake_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat_id = event.chat_id
+    ids = last_fake_scan.get(chat_id)
+    if not ids:
+        return await event.edit("Avval .nakrutka bilan skanerlash qiling.")
+
+    await event.edit(f"🚫 {len(ids)} ta shubhali akkaunt chiqarilmoqda...")
+
+    banned_rights = ChatBannedRights(until_date=None, view_messages=True)
+    unban_rights = ChatBannedRights(until_date=None, view_messages=False)  # darhol qayta qo'shilishi mumkin bo'lishi uchun
+
+    kicked = 0
+    failed = 0
+    for uid in ids:
+        try:
+            await client(EditBannedRequest(chat_id, uid, banned_rights))
+            await asyncio.sleep(0.5)
+            await client(EditBannedRequest(chat_id, uid, unban_rights))  # kick, ban emas
+            kicked += 1
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 2)
+        except Exception as e:
+            print(f".kickfake: {uid} chiqarishda xatolik: {e}")
+            failed += 1
+        await asyncio.sleep(1)  # flood-wait'dan saqlanish uchun har biri orasida pauza
+
+    last_fake_scan.pop(chat_id, None)
+    await event.edit(f"✅ Yakunlandi.\nChiqarildi: {kicked}\nXato: {failed}")
 
 
 fake_server = Flask(__name__)
