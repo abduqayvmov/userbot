@@ -1074,49 +1074,64 @@ async def daily_summary_loop():
 last_fake_scan = {}
 
 
-from telethon.tl.types import (
-    UserStatusOffline, UserStatusOnline, UserStatusRecently,
-    UserStatusLastWeek, UserStatusLastMonth, UserStatusEmpty,
-)
-
-INACTIVE_DAYS_THRESHOLD = 30  # shuncha kundan beri ko'rinmagan bo'lsa - shubhali
+BATCH_WINDOW_SECONDS = 300  # shu oraliqda (5 daqiqa) qo'shilganlar bitta "partiya" deb hisoblanadi
+BATCH_MIN_SIZE = 5          # shu partiyada kamida nechta shubhali akkaunt bo'lsa, nakrutka deb topiladi
 
 
-def _is_suspicious(user):
-    """Fake/nakrutka akkaunt belgilari (barchasi bo'lishi shart):
-    1. profil rasmi yo'q
-    2. username yo'q
-    3. hech qachon yoki uzoq vaqtdan beri (30+ kun) onlayn bo'lmagan
-    Haqiqiy faol o'yinchilar odatda guruhda faol bo'lgani uchun status
-    'onlayn' yoki 'yaqinda' chiqadi va bu mezon ularni chetlab o'tadi."""
+def _looks_fake(user):
+    """Faqat profil belgilariga qarab: rasm yo'q, username yo'q, bot/deleted emas.
+    Bu yolg'iz holda YETARLI EMAS - ko'p haqiqiy odamlar ham shu tavsifga tushadi
+    (masalan, maxfiylikni yopiq qilganlar). Shuning uchun pastda join-vaqti
+    klasterlash bilan birga ishlatiladi."""
     if getattr(user, "bot", False):
         return False
     if getattr(user, "deleted", False):
         return False
-
     has_photo = bool(getattr(user, "photo", None))
     has_username = bool(getattr(user, "username", None))
-    if has_photo or has_username:
-        return False
+    return not has_photo and not has_username
 
-    status = getattr(user, "status", None)
 
-    # Faol yoki yaqinda faol bo'lganlar - haqiqiy o'yinchi bo'lish ehtimoli baland
-    if isinstance(status, (UserStatusOnline, UserStatusRecently, UserStatusLastWeek)):
-        return False
+def _find_batch_joined_fakes(users, participants):
+    """Asosiy mezon: bir necha daqiqa ichida ommaviy qo'shilgan va profil
+    belgilari shubhali bo'lgan akkauntlar - bu nakrutkaning eng aniq izi,
+    chunki haqiqiy odamlar vaqt bo'ylab tarqoq qo'shiladi, nakrutka esa
+    to'lovdan keyin bir zumda partiya-partiya qo'shiladi."""
+    user_by_id = {u.id: u for u in users}
 
-    if isinstance(status, UserStatusOffline):
-        was_online = getattr(status, "was_online", None)
-        if was_online:
-            days_ago = (datetime.now(timezone.utc) - was_online).days
-            if days_ago < INACTIVE_DAYS_THRESHOLD:
-                return False
-        # was_online yo'q bo'lsa ham - rasm/username yo'qligi bilan birga shubhali deb qoldiramiz
-        return True
+    # user_id -> qo'shilgan vaqt (faqat _looks_fake bo'lganlar uchun)
+    candidates = []  # (date, user)
+    for p in participants:
+        uid = getattr(p, "user_id", None)
+        join_date = getattr(p, "date", None)
+        user = user_by_id.get(uid)
+        if not user or not join_date or not _looks_fake(user):
+            continue
+        candidates.append((join_date, user))
 
-    # UserStatusEmpty (yashiringan/hech qachon ko'rinmagan) yoki UserStatusLastMonth/LastYear -
-    # bularning barchasi "uzoq vaqt faol emas" degani, shubhali hisoblanadi
-    return True
+    candidates.sort(key=lambda x: x[0])
+
+    flagged = []
+    i = 0
+    n = len(candidates)
+    while i < n:
+        j = i
+        window_end = candidates[i][0] + timedelta(seconds=BATCH_WINDOW_SECONDS)
+        while j < n and candidates[j][0] <= window_end:
+            j += 1
+        batch = candidates[i:j]
+        if len(batch) >= BATCH_MIN_SIZE:
+            flagged.extend(u for _, u in batch)
+        i = j
+
+    # takrorlanishlarni olib tashlash (chegaralar ustma-ust tushib qolsa)
+    seen = set()
+    unique_flagged = []
+    for u in flagged:
+        if u.id not in seen:
+            seen.add(u.id)
+            unique_flagged.append(u)
+    return unique_flagged
 
 
 @client.on(events.NewMessage(pattern=r"^\.(nakrutka|накрутка)$", outgoing=True))
@@ -1127,28 +1142,28 @@ async def scan_fake_accounts(event):
     chat_id = event.chat_id
     await event.edit("🔍 Guruh a'zolari skanerlanmoqda, kuting...")
 
-    suspicious = []
+    all_users = []
+    all_participants = []
     total = 0
     offset = 0
     limit = 200
 
     try:
         while True:
-            participants = await client(GetParticipantsRequest(
+            result = await client(GetParticipantsRequest(
                 channel=chat_id,
                 filter=ChannelParticipantsSearch(""),
                 offset=offset,
                 limit=limit,
                 hash=0,
             ))
-            if not participants.users:
+            if not result.users:
                 break
-            for user in participants.users:
-                total += 1
-                if _is_suspicious(user):
-                    suspicious.append(user)
-            offset += len(participants.users)
-            if len(participants.users) < limit:
+            total += len(result.users)
+            all_users.extend(result.users)
+            all_participants.extend(result.participants)
+            offset += len(result.users)
+            if len(result.users) < limit:
                 break
             await asyncio.sleep(1)  # flood-wait'dan saqlanish
     except FloodWaitError as e:
@@ -1158,6 +1173,7 @@ async def scan_fake_accounts(event):
         await event.edit(f"Skanerlashda xatolik: {e}\n\n(Eslatma: bu komanda faqat supergroup/kanal turidagi guruhlarda ishlaydi, oddiy kichik guruhda ishlamasligi mumkin.)")
         return
 
+    suspicious = _find_batch_joined_fakes(all_users, all_participants)
     last_fake_scan[chat_id] = [u.id for u in suspicious]
 
     if not suspicious:
@@ -1212,6 +1228,7 @@ async def kick_fake_accounts(event):
 
     last_fake_scan.pop(chat_id, None)
     await event.edit(f"✅ Yakunlandi.\nChiqarildi: {kicked}\nXato: {failed}")
+
 
 
 fake_server = Flask(__name__)
