@@ -1074,17 +1074,48 @@ async def daily_summary_loop():
 last_fake_scan = {}
 
 
+from telethon.tl.types import (
+    UserStatusOffline, UserStatusOnline, UserStatusRecently,
+    UserStatusLastWeek, UserStatusLastMonth, UserStatusEmpty,
+)
+
+INACTIVE_DAYS_THRESHOLD = 30  # shuncha kundan beri ko'rinmagan bo'lsa - shubhali
+
+
 def _is_suspicious(user):
-    """Fake/nakrutka akkaunt belgilari: profil rasmi yo'q, username yo'q,
-    bot emas, va o'zi (deleted account) emas."""
+    """Fake/nakrutka akkaunt belgilari (barchasi bo'lishi shart):
+    1. profil rasmi yo'q
+    2. username yo'q
+    3. hech qachon yoki uzoq vaqtdan beri (30+ kun) onlayn bo'lmagan
+    Haqiqiy faol o'yinchilar odatda guruhda faol bo'lgani uchun status
+    'onlayn' yoki 'yaqinda' chiqadi va bu mezon ularni chetlab o'tadi."""
     if getattr(user, "bot", False):
         return False
     if getattr(user, "deleted", False):
         return False
+
     has_photo = bool(getattr(user, "photo", None))
     has_username = bool(getattr(user, "username", None))
     if has_photo or has_username:
         return False
+
+    status = getattr(user, "status", None)
+
+    # Faol yoki yaqinda faol bo'lganlar - haqiqiy o'yinchi bo'lish ehtimoli baland
+    if isinstance(status, (UserStatusOnline, UserStatusRecently, UserStatusLastWeek)):
+        return False
+
+    if isinstance(status, UserStatusOffline):
+        was_online = getattr(status, "was_online", None)
+        if was_online:
+            days_ago = (datetime.now(timezone.utc) - was_online).days
+            if days_ago < INACTIVE_DAYS_THRESHOLD:
+                return False
+        # was_online yo'q bo'lsa ham - rasm/username yo'qligi bilan birga shubhali deb qoldiramiz
+        return True
+
+    # UserStatusEmpty (yashiringan/hech qachon ko'rinmagan) yoki UserStatusLastMonth/LastYear -
+    # bularning barchasi "uzoq vaqt faol emas" degani, shubhali hisoblanadi
     return True
 
 
