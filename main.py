@@ -41,7 +41,10 @@ DAILY_SUMMARY_MINUTE = 5
 TARGET_LANG = "uz"
 TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
-CACHE_DIR = "/tmp/antidelete_cache"
+CACHE_DIR = os.getenv(
+    "CACHE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "antidelete_cache"),
+)
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
 WATCHED_USERNAMES_FILE = os.path.join(CACHE_DIR, "watched_usernames.json")
