@@ -1264,6 +1264,48 @@ async def main():
         await asyncio.sleep(5)
 
 
+# .odel / .одел - guruhdagi barcha "deleted account"larni chiqaradi
+@client.on(events.NewMessage(pattern=r"^\.(odel|одел)$", outgoing=True))
+async def kick_deleted_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat = await event.get_chat()
+    await event.edit("🔍 O'chirilgan akkauntlar qidirilmoqda...")
+
+    deleted_users = []
+    try:
+        async for user in client.iter_participants(chat):
+            if user.deleted:
+                deleted_users.append(user)
+    except Exception as e:
+        return await event.edit(f"Xatolik: {e}")
+
+    if not deleted_users:
+        return await event.edit("✅ O'chirilgan akkaunt topilmadi.")
+
+    await event.edit(f"🗑 {len(deleted_users)} ta o'chirilgan akkaunt topildi. Chiqarilmoqda...")
+
+    banned_rights = ChatBannedRights(until_date=None, view_messages=True)
+    unban_rights = ChatBannedRights(until_date=None, view_messages=False)
+
+    removed = 0
+    failed = 0
+    for user in deleted_users:
+        try:
+            await client(EditBannedRequest(chat, user.id, banned_rights))
+            await asyncio.sleep(0.5)
+            await client(EditBannedRequest(chat, user.id, unban_rights))
+            removed += 1
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 2)
+        except Exception:
+            failed += 1
+        await asyncio.sleep(1.5)
+
+    await event.edit(f"✅ Tugadi.\nChiqarildi: {removed} ta\nXato: {failed} ta")
+
+
 if __name__ == "__main__":
     with client:
         client.loop.run_until_complete(main())
