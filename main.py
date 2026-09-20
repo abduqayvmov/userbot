@@ -1287,15 +1287,12 @@ async def kick_deleted_accounts(event):
     await event.edit(f"🗑 {len(deleted_users)} ta o'chirilgan akkaunt topildi. Chiqarilmoqda...")
 
     banned_rights = ChatBannedRights(until_date=None, view_messages=True)
-    unban_rights = ChatBannedRights(until_date=None, view_messages=False)
 
     removed = 0
     failed = 0
     for i, user in enumerate(deleted_users, start=1):
         try:
             await client(EditBannedRequest(chat, user.id, banned_rights))
-            await asyncio.sleep(1.5)
-            await client(EditBannedRequest(chat, user.id, unban_rights))
             removed += 1
         except FloodWaitError as e:
             wait_time = e.seconds + 5
