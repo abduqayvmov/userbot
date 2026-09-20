@@ -1291,17 +1291,30 @@ async def kick_deleted_accounts(event):
 
     removed = 0
     failed = 0
-    for user in deleted_users:
+    for i, user in enumerate(deleted_users, start=1):
         try:
             await client(EditBannedRequest(chat, user.id, banned_rights))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.5)
             await client(EditBannedRequest(chat, user.id, unban_rights))
             removed += 1
         except FloodWaitError as e:
-            await asyncio.sleep(e.seconds + 2)
+            wait_time = e.seconds + 5
+            try:
+                await event.edit(
+                    f"⏳ FloodWait: {wait_time} soniya kutilmoqda... "
+                    f"({removed}/{len(deleted_users)} chiqarildi)"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(wait_time)
         except Exception:
             failed += 1
-        await asyncio.sleep(1.5)
+        # Har bir akkaunt orasida sekin harakat qilamiz, va har 15 tadan
+        # keyin qo'shimcha uzunroq tanaffus beramiz - bu FloodWait'ga
+        # tushish ehtimolini sezilarli kamaytiradi.
+        await asyncio.sleep(3)
+        if i % 15 == 0:
+            await asyncio.sleep(20)
 
     await event.edit(f"✅ Tugadi.\nChiqarildi: {removed} ta\nXato: {failed} ta")
 
