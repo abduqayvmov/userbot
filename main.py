@@ -1309,9 +1309,9 @@ async def kick_deleted_accounts(event):
         # Har bir akkaunt orasida sekin harakat qilamiz, va har 15 tadan
         # keyin qo'shimcha uzunroq tanaffus beramiz - bu FloodWait'ga
         # tushish ehtimolini sezilarli kamaytiradi.
-        await asyncio.sleep(3)
+        await asyncio.sleep(2.5)
         if i % 15 == 0:
-            await asyncio.sleep(20)
+            await asyncio.sleep(10)
 
     await event.edit(f"✅ Tugadi.\nChiqarildi: {removed} ta\nXato: {failed} ta")
 
