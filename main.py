@@ -1,0 +1,913 @@
+import os
+import html
+import time
+import sqlite3
+import asyncio
+import logging
+import threading
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import requests
+from flask import Flask
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
+from telethon.tl.functions.channels import EditAdminRequest
+from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.types import ChatAdminRights
+from telethon.tl.functions.channels import GetParticipantsRequest, EditBannedRequest
+from telethon.tl.types import ChannelParticipantsSearch, ChatBannedRights
+
+
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+logging.getLogger("telethon").setLevel(logging.INFO)
+
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+SESSION_NAME = "antidelete_session"
+SESSION_STRING = os.getenv("SESSION_STRING", "")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+
+CACHE_DIR = os.getenv(
+    "CACHE_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "antidelete_cache"),
+)
+os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
+
+# Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
+# shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+db_conn = sqlite3.connect(CACHE_DB_FILE, check_same_thread=False)
+db_conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        chat_id INTEGER NOT NULL,
+        msg_id INTEGER NOT NULL,
+        sender_id INTEGER,
+        text TEXT,
+        media_path TEXT,
+        media_kind TEXT,
+        is_private INTEGER,
+        date TEXT,
+        cached_at REAL,
+        PRIMARY KEY (chat_id, msg_id)
+    )
+    """
+)
+db_conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_msg_private ON messages (msg_id, is_private)")
+db_conn.commit()
+
+
+def cache_message_row(chat_id, msg_id, sender_id, text, media_path, media_kind, is_private, date):
+    """Diskdagi SQLite bazaga yozadi - RAM'ga qaramaydi va vaqt/miqdor bo'yicha
+    chegaralanmagan (cheksiz) saqlaydi. Konteyner butunlay qayta qurilganda
+    (masalan Render'da yangi deploy) diskning o'zi ham tozalanadi - bu holatda
+    baza baribir bo'sh boshlanadi, buni faqat doimiy disk yoki tashqi baza bilan
+    oldini olish mumkin."""
+    db_conn.execute(
+        "INSERT OR REPLACE INTO messages "
+        "(chat_id, msg_id, sender_id, text, media_path, media_kind, is_private, date, cached_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            chat_id, msg_id, sender_id, text, media_path, media_kind, int(bool(is_private)),
+            date.isoformat() if date else None, time.time(),
+        ),
+    )
+    db_conn.commit()
+
+
+def pop_cached_message(msg_id, chat_id):
+    """chat_id ma'lum bo'lsa (guruh/kanal o'chirish hodisasi) aynan shu chat
+    bo'yicha, aks holda (shaxsiy xabar o'chirilganda Telegram qaysi chatligini
+    bermaydi) faqat shaxsiy xabarlar orasidan msg_id bo'yicha qidiradi -
+    shunda guruh xabari bilan tasodifiy id to'qnashuvi bo'lmaydi."""
+    cur = db_conn.cursor()
+    if chat_id is not None:
+        cur.execute("SELECT * FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
+    else:
+        cur.execute("SELECT * FROM messages WHERE msg_id = ? AND is_private = 1", (msg_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    columns = [c[0] for c in cur.description]
+    data = dict(zip(columns, row))
+    db_conn.execute("DELETE FROM messages WHERE chat_id = ? AND msg_id = ?", (data["chat_id"], data["msg_id"]))
+    db_conn.commit()
+    data["date"] = datetime.fromisoformat(data["date"]) if data.get("date") else None
+    return data
+
+
+def get_cached_row(chat_id, msg_id):
+    """pop_cached_message'dan farqli - o'chirmaydi, faqat o'qiydi (tahrirni
+    aniqlash uchun eski matnni bilish kerak, lekin xabar o'zi hali chatda bor)."""
+    cur = db_conn.cursor()
+    cur.execute("SELECT * FROM messages WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    columns = [c[0] for c in cur.description]
+    data = dict(zip(columns, row))
+    data["date"] = datetime.fromisoformat(data["date"]) if data.get("date") else None
+    return data
+
+def mention_html(name, user_id):
+    safe_name = html.escape(name or "Noma'lum")
+    return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
+
+
+
+
+def is_media_message(message):
+    return bool(message.photo or message.video or message.video_note or message.voice or message.sticker)
+
+
+MEDIA_KIND_EMOJI = {
+    "video_note": "⭕",
+    "voice": "🎤",
+    "sticker": "🧩",
+    "video": "🎥",
+    "photo": "🖼",
+}
+BOT_API_METHOD_BY_KIND = {
+    "video_note": ("sendVideoNote", "video_note"),
+    "voice": ("sendVoice", "voice"),
+    "sticker": ("sendSticker", "sticker"),
+    "video": ("sendVideo", "video"),
+    "photo": ("sendPhoto", "photo"),
+}
+
+
+def message_media_kind(message):
+    if message.video_note:
+        return "video_note"
+    if message.voice:
+        return "voice"
+    if message.sticker:
+        return "sticker"
+    if message.video:
+        return "video"
+    if message.photo:
+        return "photo"
+    return None
+
+
+def message_kind_emoji(message):
+    return MEDIA_KIND_EMOJI.get(message_media_kind(message), "💬")
+
+
+def send_log_message(caption, media_path=None, media_kind=None):
+    """LOG_CHANNEL_ID'ga Bot API orqali yuboradi (Telethon/MTProto orqali emas) -
+    shunda tg://user?id= mention'lari yuboruvchining maxfiylik sozlamasidan
+    qat'iy nazar har doim bosiladigan bo'lib qoladi. Botni kanalga admin
+    qilib qo'shish kerak."""
+    if not BOT_TOKEN or not LOG_CHANNEL_ID:
+        return
+    try:
+        if media_path and os.path.exists(media_path):
+            method, field = BOT_API_METHOD_BY_KIND.get(media_kind, ("sendDocument", "document"))
+            with open(media_path, "rb") as f:
+                if method == "sendSticker":
+                    resp = requests.post(
+                        f"{BOT_API_URL}/sendSticker",
+                        data={"chat_id": LOG_CHANNEL_ID},
+                        files={"sticker": f},
+                        timeout=60,
+                    )
+                else:
+                    resp = requests.post(
+                        f"{BOT_API_URL}/{method}",
+                        data={"chat_id": LOG_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"},
+                        files={field: f},
+                        timeout=60,
+                    )
+            if not resp.ok:
+                print(f"Bot API {method} xatolik: {resp.status_code} {resp.text}")
+            if method == "sendSticker":
+                bot_api_send_message(caption)
+            try:
+                os.remove(media_path)
+            except Exception:
+                pass
+        else:
+            bot_api_send_message(caption)
+    except Exception as e:
+        print(f"Bot API'ga yuborishda xatolik: {e}")
+
+
+def bot_api_send_message(text):
+    try:
+        resp = requests.post(
+            f"{BOT_API_URL}/sendMessage",
+            data={"chat_id": LOG_CHANNEL_ID, "text": text, "parse_mode": "HTML"},
+            timeout=15,
+        )
+        if not resp.ok:
+            print(f"Bot API sendMessage xatolik: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"Bot API sendMessage so'rovida xatolik: {e}")
+
+
+async def download_to_disk(message):
+    """Media faylni RAM emas, diskka yuklaydi - xotira sarfini kamaytirish uchun."""
+    try:
+        if message.video_note:
+            ext = "mp4"
+        elif message.voice:
+            ext = "ogg"
+        elif message.sticker:
+            ext = "webp"
+        elif message.video:
+            ext = "mp4"
+        elif message.photo:
+            ext = "jpg"
+        else:
+            ext = "bin"
+
+        file_path = os.path.join(CACHE_DIR, f"{message.chat_id}_{message.id}_{int(time.time())}.{ext}")
+        saved_path = await client.download_media(message, file=file_path)
+        return saved_path
+    except Exception as e:
+        print(f"Media yuklashda xatolik: {e}")
+        return None
+
+
+@client.on(events.NewMessage())
+async def cache_messages(event):
+    """Shaxsiy va guruh xabarlarini bazaga keshlaydi - anti-delete cheksiz
+    muddatga ishlashi uchun (disk to'lguncha)."""
+    media_path = None
+    if event.media and is_media_message(event.message):
+        media_path = await download_to_disk(event.message)
+
+    cache_message_row(
+        chat_id=event.chat_id,
+        msg_id=event.id,
+        sender_id=event.sender_id,
+        text=event.raw_text,
+        media_path=media_path,
+        media_kind=message_media_kind(event.message) if event.media else None,
+        is_private=event.is_private,
+        date=event.date,
+    )
+
+
+@client.on(events.MessageDeleted())
+async def on_message_deleted(event):
+    if not LOG_CHANNEL_ID:
+        return
+    for msg_id in event.deleted_ids:
+        data = pop_cached_message(msg_id, event.chat_id)
+        if not data or not data.get("is_private"):
+            continue
+        sender_id = data["sender_id"]
+        try:
+            sender = await client.get_entity(sender_id) if sender_id else None
+        except Exception as e:
+            print(f"Yuboruvchini aniqlashda xatolik: {e}")
+            sender = None
+        if sender is not None and getattr(sender, "bot", False):
+            continue
+        sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+        sender_username = getattr(sender, "username", None)
+        user_part = f"@{sender_username}" if sender_username else "yo'q"
+        sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+        id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
+
+        caption = (
+            f"#delete\n"
+            f"O'chirilgan shaxsiy xabar\n"
+            f"{MEDIA_KIND_EMOJI.get(data.get('media_kind'), '💬')} Kimdan: {sender_link}{id_part}\n"
+            f"Vaqt: {data['date'].astimezone(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Matn: {html.escape(data['text']) if data['text'] else '(matn yoq)'}"
+        )
+        send_log_message(caption, data["media_path"], data.get("media_kind"))
+
+
+@client.on(events.MessageEdited())
+async def on_message_edited(event):
+    if not LOG_CHANNEL_ID:
+        return
+    old = get_cached_row(event.chat_id, event.id)
+    new_text = event.raw_text or ""
+    old_text = old["text"] if old else None
+
+    cache_message_row(
+        chat_id=event.chat_id,
+        msg_id=event.id,
+        sender_id=event.sender_id,
+        text=new_text,
+        media_path=old["media_path"] if old else None,
+        media_kind=old["media_kind"] if old else (message_media_kind(event.message) if event.media else None),
+        is_private=event.is_private,
+        date=old["date"] if old and old.get("date") else event.date,
+    )
+
+    if not event.is_private or not old_text or old_text == new_text:
+        return
+
+    sender_id = event.sender_id
+    try:
+        sender = await client.get_entity(sender_id) if sender_id else None
+    except Exception as e:
+        print(f"Yuboruvchini aniqlashda xatolik: {e}")
+        sender = None
+    if sender is not None and getattr(sender, "bot", False):
+        return
+    sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+    sender_username = getattr(sender, "username", None)
+    user_part = f"@{sender_username}" if sender_username else "yo'q"
+    sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+    id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
+
+    caption = (
+        f"#edit\n"
+        f"Tahrirlangan shaxsiy xabar\n"
+        f"✏️ Kimdan: {sender_link}{id_part}\n"
+        f"Vaqt: {datetime.now(TASHKENT_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Eski matn: {html.escape(old_text)}\n"
+        f"Yangi matn: {html.escape(new_text) if new_text else '(matn yoq)'}"
+    )
+    send_log_message(caption)
+
+
+# Media reply orqali saqlash - shaxsiy chat, guruh va kanallarda ishlaydi
+@client.on(events.NewMessage(outgoing=True))
+async def save_media_via_reply(event):
+    if not LOG_CHANNEL_ID:
+        return
+    if not event.is_reply:
+        return
+    reply = await event.get_reply_message()
+    if not reply or not reply.media or reply.out:
+        return
+    if not is_media_message(reply) or reply.sticker:
+        return
+    is_video = bool(reply.video)
+    is_round = bool(reply.video_note)
+    is_voice = bool(reply.voice)
+    try:
+        sender = await reply.get_sender()
+        sender_name = getattr(sender, "first_name", None) or "Noma'lum"
+        sender_username = getattr(sender, "username", None)
+        sender_id = getattr(sender, "id", None) or reply.sender_id
+        user_part = f"@{sender_username}" if sender_username else "yo'q"
+        sender_link = mention_html(sender_name, sender_id) if sender_id else "Noma'lum"
+        id_part = f" (id={sender_id} user={user_part})" if sender_id else ""
+        if is_round:
+            kind = "Aylana video"
+        elif is_voice:
+            kind = "Ovozli xabar"
+        elif is_video:
+            kind = "Video"
+        else:
+            kind = "Rasm"
+        caption = f"#reply\n{kind} (reply orqali saqlandi)\n{message_kind_emoji(reply)} Kimdan: {sender_link}{id_part}"
+        media_path = await download_to_disk(reply)
+        if not media_path:
+            print("Reply media: yuklab bolmadi (bo'sh)")
+            return
+        send_log_message(caption, media_path, message_media_kind(reply))
+    except Exception as e:
+        print(f"Reply orqali media saqlashda xatolik: {e}")
+
+
+# .ad / .ад - guruh admin + teg
+@client.on(events.NewMessage(pattern=r"^\.(ad|ад)(?:\s+(.+))?$", outgoing=True))
+async def add_admin_tag(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+    reply = await event.get_reply_message()
+    if not reply or not getattr(reply, "sender_id", None):
+        return await event.edit("Reply qiling: .ad teg_matni")
+    tag_text = event.pattern_match.group(2) or ""
+    target_id = reply.sender_id
+    try:
+        rights = ChatAdminRights(
+            add_admins=False, invite_users=True, change_info=False,
+            ban_users=False, delete_messages=True, pin_messages=True, manage_call=True,
+        )
+        await client(EditAdminRequest(event.chat_id, target_id, rights, tag_text or "Admin"))
+        await event.edit(f"Admin qilindi. Teg: {tag_text or '(bosh)'}")
+    except Exception as e:
+        await event.edit(f"Xatolik: {e}")
+
+
+# .unad / .унад
+@client.on(events.NewMessage(pattern=r"^\.(unad|унад)$", outgoing=True))
+async def remove_admin_tag(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+    reply = await event.get_reply_message()
+    if not reply or not getattr(reply, "sender_id", None):
+        return await event.edit("Reply qiling: .unad")
+    target_id = reply.sender_id
+    try:
+        empty_rights = ChatAdminRights(
+            add_admins=False, invite_users=False, change_info=False,
+            ban_users=False, delete_messages=False, pin_messages=False, manage_call=False,
+        )
+        await client(EditAdminRequest(event.chat_id, target_id, empty_rights, ""))
+        await event.edit("Admin va teg olib tashlandi.")
+    except Exception as e:
+        await event.edit(f"Xatolik: {e}")
+
+
+async def safe_delete_messages(chat_id, ids_batch, max_retries=3):
+    """FloodWait xatoligini avtomatik kutib, qayta urinadi - .delete ketma-ket ishlashi uchun."""
+    for attempt in range(max_retries):
+        try:
+            await client.delete_messages(chat_id, ids_batch)
+            return True
+        except FloodWaitError as e:
+            wait_time = e.seconds + 2
+            print(f".delete: FloodWait, {wait_time} soniya kutilmoqda...")
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            print(f".delete xatolik: {e}")
+            return False
+    return False
+
+
+# .delete / .делете - o'zining barcha xabarlarini o'chiradi (guruh + shaxsiy), yakuniy xabarsiz
+@client.on(events.NewMessage(pattern=r"^\.(delete|делете)$", outgoing=True))
+async def delete_my_messages(event):
+    chat_id = event.chat_id
+    me = await client.get_me()
+
+    try:
+        await event.delete()
+    except Exception:
+        pass
+
+    ids_batch = []
+    try:
+        async for msg in client.iter_messages(chat_id, from_user=me.id):
+            ids_batch.append(msg.id)
+            if len(ids_batch) == 100:
+                await safe_delete_messages(chat_id, ids_batch)
+                ids_batch = []
+                await asyncio.sleep(1)
+    except FloodWaitError as e:
+        wait_time = e.seconds + 2
+        print(f".delete: FloodWait (iter), {wait_time} soniya kutilmoqda...")
+        await asyncio.sleep(wait_time)
+
+    if ids_batch:
+        await safe_delete_messages(chat_id, ids_batch)
+
+
+# .del / .дел - reply qilingan xabar + buyruqning o'zi o'chadi
+@client.on(events.NewMessage(pattern=r"^\.(del|дел)$", outgoing=True))
+async def delete_replied_message(event):
+    reply = await event.get_reply_message()
+    if not reply:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+        return
+
+    try:
+        await safe_delete_messages(event.chat_id, [reply.id, event.id])
+    except Exception:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+
+
+@client.on(events.NewMessage(pattern=r"^\.(tek|тек)(?:\s+(.+))?$", outgoing=True))
+async def check_mutual_contact(event):
+    from telethon.tl.functions.contacts import AddContactRequest, DeleteContactsRequest
+    from telethon.tl.types import User as TgUser
+
+    target = event.pattern_match.group(2)
+    entity = None
+
+    if not target:
+        reply = await event.get_reply_message()
+        if reply and reply.sender_id:
+            # Reply orqali entity'ni to'g'ridan-to'g'ri olamiz -
+            # bu bare ID orqali get_entity() qilishga qaraganda ishonchli,
+            # chunki access_hash reply xabaridan avtomatik olinadi.
+            entity = await reply.get_sender()
+        else:
+            return await event.edit("Foydalanish: .tek @username yoki .tek ID (yoki reply qiling)")
+
+    await event.edit("Tekshirilmoqda...")
+    temporarily_added = False
+    try:
+        if entity is None:
+            entity = await client.get_entity(target.strip())
+
+        if not isinstance(entity, TgUser):
+            return await event.edit(
+                "Bu buyruq faqat oddiy foydalanuvchilar uchun ishlaydi "
+                "(kanal yoki anonim admin uchun ishlamaydi)."
+            )
+
+        full = await client(GetFullUserRequest(entity))
+        user = full.users[0] if full.users else entity
+        was_contact = getattr(user, "contact", False)
+
+        # Agar hali kontaktda bo'lmasa, vaqtincha qo'shib, natijani tekshiramiz,
+        # keyin darhol olib tashlaymiz - shunda doimiy ravishda hech kim qo'shilib qolmaydi.
+        if not was_contact:
+            try:
+                add_result = await client(AddContactRequest(
+                    id=entity, first_name=getattr(user, "first_name", None) or "Tekshiruv",
+                    last_name="", phone="",
+                ))
+                if add_result.users:
+                    user = add_result.users[0]
+                temporarily_added = True
+            except Exception as e:
+                print(f".tek: vaqtincha qoshishda xatolik: {e}")
+
+        name = getattr(user, "first_name", None) or "Noma'lum"
+        username = getattr(user, "username", None)
+        user_id = getattr(user, "id", None) or entity.id
+        is_mutual = getattr(user, "mutual_contact", False)
+
+        if temporarily_added:
+            try:
+                await client(DeleteContactsRequest(id=[entity]))
+            except Exception as e:
+                print(f".tek: vaqtincha kontaktni olib tashlashda xatolik: {e}")
+
+        if is_mutual:
+            status = "U sizni ham kontaktiga qo'shgan (o'zaro)."
+        else:
+            status = "U sizni kontaktiga qo'shmagan."
+
+        name_link = mention_html(name, user_id)
+        username_part = f"@{username}" if username else "(username yoq)"
+
+        result_text = (
+            f"{name_link}\n"
+            f"Username: {username_part}\n"
+            f"ID: {user_id}\n"
+            f"{status}"
+        )
+        await event.edit(result_text, parse_mode="html")
+    except Exception as e:
+        if temporarily_added and entity is not None:
+            try:
+                await client(DeleteContactsRequest(id=[entity]))
+            except Exception:
+                pass
+        await event.edit(f"Xatolik: {e}")
+
+
+# .goff / .gon - profildagi StarGift'larni yashirish/qayta ko'rsatish
+from telethon.tl.functions.payments import GetSavedStarGiftsRequest, SaveStarGiftRequest
+from telethon.tl.types import InputSavedStarGiftUser
+
+
+async def _fetch_all_saved_gifts():
+    """'me' profilidagi barcha saqlangan hadyalarni paketlab to'liq yuklaydi."""
+    offset = ''
+    all_gifts = []
+    while True:
+        result = await client(GetSavedStarGiftsRequest(
+            peer='me',
+            offset=offset,
+            limit=100,
+        ))
+        if not result.gifts:
+            break
+        all_gifts.extend(result.gifts)
+        if getattr(result, 'next_offset', None):
+            offset = result.next_offset
+        else:
+            break
+    return all_gifts
+
+
+# 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .goff
+@client.on(events.NewMessage(pattern=r"^\.goff$", outgoing=True))
+async def hide_all_gifts(event):
+    await event.edit("🔄 Barcha hadyalar ro'yxati yuklanmoqda, kuting...")
+
+    try:
+        all_gifts = await _fetch_all_saved_gifts()
+
+        if not all_gifts:
+            await event.edit("📊 **Natija:** Profilingizda umuman hadyalar topilmadi.")
+            return
+
+        await event.edit(f"📦 Jami {len(all_gifts)} ta hadya topildi. Profildan berkitish boshlandi...")
+        hidden_count = 0
+
+        # 🔐 Topilgan barcha hadyalarni bittalab yashirib chiqamiz
+        for saved_gift in all_gifts:
+            if getattr(saved_gift, 'unsaved', False) == False and saved_gift.msg_id:
+                await client(SaveStarGiftRequest(
+                    stargift=InputSavedStarGiftUser(msg_id=saved_gift.msg_id),
+                    unsave=True,
+                ))
+                hidden_count += 1
+                await asyncio.sleep(1.5)  # Telegram blokiga tushmaslik uchun 1.5 soniya kutish xavfsizroq
+
+        if hidden_count == 0:
+            await event.edit("📊 **Natija:** Profilingizdagi barcha hadyalar allaqachon yashirib bo'lingan.")
+        else:
+            await event.edit(f"✅ **Muvaffaqiyatli yakunlandi!**\n📦 Profilingizdagi jami `{hidden_count}` ta hadya mutloq berkitildi.")
+
+    except Exception as e:
+        await event.edit(f"❌ Hadyalarni yashirishda xatolik yuz berdi: {str(e)}")
+
+
+# 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gon
+@client.on(events.NewMessage(pattern=r"^\.gon$", outgoing=True))
+async def show_all_gifts(event):
+    await event.edit("🔄 Barcha yashirilgan hadyalar ro'yxati yuklanmoqda...")
+
+    try:
+        all_gifts = await _fetch_all_saved_gifts()
+
+        if not all_gifts:
+            await event.edit("📊 **Natija:** Profilingizda hadyalar mavjud emas.")
+            return
+
+        await event.edit(f"📦 Jami {len(all_gifts)} ta hadya topildi. Profilga qaytarish boshlandi...")
+        shown_count = 0
+
+        for saved_gift in all_gifts:
+            if getattr(saved_gift, 'unsaved', False) == True and saved_gift.msg_id:
+                await client(SaveStarGiftRequest(
+                    stargift=InputSavedStarGiftUser(msg_id=saved_gift.msg_id),
+                    unsave=False,
+                ))
+                shown_count += 1
+                await asyncio.sleep(1.5)
+
+        if shown_count == 0:
+            await event.edit("📊 **Natija:** Profilingizda yashirilgan hadyalar topilmadi (hammasi ochiq turibdi).")
+        else:
+            await event.edit(f"✅ **Muvaffaqiyatli yakunlandi!**\n🎉 Jami `{shown_count}` ta hadya profilingizda qayta ko'rinadigan qilindi.")
+
+    except Exception as e:
+        await event.edit(f"❌ Hadyalarni yoqishda xatolik: {str(e)}")
+
+
+# ============================================================
+# NAKRUTKA / FAKE AKKAUNT SKANER VA KICK QILISH
+# Ushbu blokni main.py oxiriga (client.run_until_disconnected() dan OLDIN) qo'shing.
+# Kerakli import'lar main.py boshiga qo'shilishi kerak (pastda ko'rsatilgan).
+# ============================================================
+
+# --- main.py FAYLINING BOSHIGA QO'SHILADIGAN IMPORT'LAR ---
+# from telethon.tl.functions.channels import GetParticipantsRequest, EditBannedRequest
+# from telethon.tl.types import ChannelParticipantsSearch, ChatBannedRights
+
+# Oxirgi skanerlash natijalarini xotirada saqlab turamiz: {chat_id: [user_id, ...]}
+last_fake_scan = {}
+
+
+BATCH_WINDOW_SECONDS = 300  # shu oraliqda (5 daqiqa) qo'shilganlar bitta "partiya" deb hisoblanadi
+BATCH_MIN_SIZE = 5          # shu partiyada kamida nechta shubhali akkaunt bo'lsa, nakrutka deb topiladi
+
+
+def _looks_fake(user):
+    """Faqat profil belgilariga qarab: rasm yo'q, username yo'q, bot/deleted emas.
+    Bu yolg'iz holda YETARLI EMAS - ko'p haqiqiy odamlar ham shu tavsifga tushadi
+    (masalan, maxfiylikni yopiq qilganlar). Shuning uchun pastda join-vaqti
+    klasterlash bilan birga ishlatiladi."""
+    if getattr(user, "bot", False):
+        return False
+    if getattr(user, "deleted", False):
+        return False
+    has_photo = bool(getattr(user, "photo", None))
+    has_username = bool(getattr(user, "username", None))
+    return not has_photo and not has_username
+
+
+def _find_batch_joined_fakes(users, participants):
+    """Asosiy mezon: bir necha daqiqa ichida ommaviy qo'shilgan va profil
+    belgilari shubhali bo'lgan akkauntlar - bu nakrutkaning eng aniq izi,
+    chunki haqiqiy odamlar vaqt bo'ylab tarqoq qo'shiladi, nakrutka esa
+    to'lovdan keyin bir zumda partiya-partiya qo'shiladi."""
+    user_by_id = {u.id: u for u in users}
+
+    # user_id -> qo'shilgan vaqt (faqat _looks_fake bo'lganlar uchun)
+    candidates = []  # (date, user)
+    for p in participants:
+        uid = getattr(p, "user_id", None)
+        join_date = getattr(p, "date", None)
+        user = user_by_id.get(uid)
+        if not user or not join_date or not _looks_fake(user):
+            continue
+        candidates.append((join_date, user))
+
+    candidates.sort(key=lambda x: x[0])
+
+    flagged = []
+    i = 0
+    n = len(candidates)
+    while i < n:
+        j = i
+        window_end = candidates[i][0] + timedelta(seconds=BATCH_WINDOW_SECONDS)
+        while j < n and candidates[j][0] <= window_end:
+            j += 1
+        batch = candidates[i:j]
+        if len(batch) >= BATCH_MIN_SIZE:
+            flagged.extend(u for _, u in batch)
+        i = j
+
+    # takrorlanishlarni olib tashlash (chegaralar ustma-ust tushib qolsa)
+    seen = set()
+    unique_flagged = []
+    for u in flagged:
+        if u.id not in seen:
+            seen.add(u.id)
+            unique_flagged.append(u)
+    return unique_flagged
+
+
+@client.on(events.NewMessage(pattern=r"^\.(nakrutka|накрутка)$", outgoing=True))
+async def scan_fake_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat_id = event.chat_id
+    await event.edit("🔍 Guruh a'zolari skanerlanmoqda, kuting...")
+
+    all_users = []
+    all_participants = []
+    total = 0
+    offset = 0
+    limit = 200
+
+    try:
+        while True:
+            result = await client(GetParticipantsRequest(
+                channel=chat_id,
+                filter=ChannelParticipantsSearch(""),
+                offset=offset,
+                limit=limit,
+                hash=0,
+            ))
+            if not result.users:
+                break
+            total += len(result.users)
+            all_users.extend(result.users)
+            all_participants.extend(result.participants)
+            offset += len(result.users)
+            if len(result.users) < limit:
+                break
+            await asyncio.sleep(1)  # flood-wait'dan saqlanish
+    except FloodWaitError as e:
+        await event.edit(f"FloodWait: {e.seconds} soniya kutish kerak, keyinroq urinib ko'ring.")
+        return
+    except Exception as e:
+        await event.edit(f"Skanerlashda xatolik: {e}\n\n(Eslatma: bu komanda faqat supergroup/kanal turidagi guruhlarda ishlaydi, oddiy kichik guruhda ishlamasligi mumkin.)")
+        return
+
+    suspicious = _find_batch_joined_fakes(all_users, all_participants)
+    last_fake_scan[chat_id] = [u.id for u in suspicious]
+
+    if not suspicious:
+        return await event.edit(f"✅ Skanerlash tugadi. {total} a'zodan shubhali (nakrutka) akkaunt topilmadi.")
+
+    lines = [f"🕵️ #nakrutka_skaner\nGuruh: {chat_id}\nJami a'zo: {total}\nShubhali topildi: {len(suspicious)}\n"]
+    for u in suspicious[:50]:  # xabar juda uzun bo'lib ketmasligi uchun birinchi 50 tasi
+        name = f"{u.first_name or ''} {u.last_name or ''}".strip() or "Noma'lum"
+        lines.append(f"• {mention_html(name, u.id)} (id={u.id})")
+    if len(suspicious) > 50:
+        lines.append(f"... va yana {len(suspicious) - 50} ta (to'liq ro'yxat .kickfake bilan chiqariladi)")
+
+    caption = "\n".join(lines)
+    send_log_message(caption)
+
+    await event.edit(
+        f"✅ Skanerlash tugadi.\nJami a'zo: {total}\nShubhali (nakrutka) topildi: {len(suspicious)}\n\n"
+        f"To'liq ro'yxat LOG kanalga yuborildi.\n"
+        f"Hammasini chiqarish uchun: .kickfake"
+    )
+
+
+@client.on(events.NewMessage(pattern=r"^\.(kickfake|кикфейк)$", outgoing=True))
+async def kick_fake_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat_id = event.chat_id
+    ids = last_fake_scan.get(chat_id)
+    if not ids:
+        return await event.edit("Avval .nakrutka bilan skanerlash qiling.")
+
+    await event.edit(f"🚫 {len(ids)} ta shubhali akkaunt chiqarilmoqda...")
+
+    banned_rights = ChatBannedRights(until_date=None, view_messages=True)
+    unban_rights = ChatBannedRights(until_date=None, view_messages=False)  # darhol qayta qo'shilishi mumkin bo'lishi uchun
+
+    kicked = 0
+    failed = 0
+    for uid in ids:
+        try:
+            await client(EditBannedRequest(chat_id, uid, banned_rights))
+            await asyncio.sleep(0.5)
+            await client(EditBannedRequest(chat_id, uid, unban_rights))  # kick, ban emas
+            kicked += 1
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 2)
+        except Exception as e:
+            print(f".kickfake: {uid} chiqarishda xatolik: {e}")
+            failed += 1
+        await asyncio.sleep(1)  # flood-wait'dan saqlanish uchun har biri orasida pauza
+
+    last_fake_scan.pop(chat_id, None)
+    await event.edit(f"✅ Yakunlandi.\nChiqarildi: {kicked}\nXato: {failed}")
+
+
+
+
+fake_server = Flask(__name__)
+
+
+@fake_server.route("/")
+def home():
+    return "Bot ishlab turibdi."
+
+
+def run_fake_server():
+    port = int(os.getenv("PORT", 8080))
+    fake_server.run(host="0.0.0.0", port=port)
+
+
+async def main():
+    threading.Thread(target=run_fake_server, daemon=True).start()
+    while True:
+        try:
+            await client.start()
+            print("Userbot ishga tushdi.")
+            await client.run_until_disconnected()
+        except Exception as e:
+            print(f"Telegram ulanishida xatolik: {e}")
+        print("Telegram bilan aloqa uzildi, 5 soniyadan keyin qayta ulanishga urinaman...")
+        await asyncio.sleep(5)
+
+
+# .odel / .одел - guruhdagi barcha "deleted account"larni chiqaradi
+@client.on(events.NewMessage(pattern=r"^\.(odel|одел)$", outgoing=True))
+async def kick_deleted_accounts(event):
+    if event.is_private:
+        return await event.edit("Bu buyruq faqat guruhda ishlaydi.")
+
+    chat = await event.get_chat()
+    await event.edit("🔍 O'chirilgan akkauntlar qidirilmoqda...")
+
+    deleted_users = []
+    try:
+        async for user in client.iter_participants(chat):
+            if user.deleted:
+                deleted_users.append(user)
+    except Exception as e:
+        return await event.edit(f"Xatolik: {e}")
+
+    if not deleted_users:
+        return await event.edit("✅ O'chirilgan akkaunt topilmadi.")
+
+    await event.edit(f"🗑 {len(deleted_users)} ta o'chirilgan akkaunt topildi. Chiqarilmoqda...")
+
+    banned_rights = ChatBannedRights(until_date=None, view_messages=True)
+
+    removed = 0
+    failed = 0
+    for i, user in enumerate(deleted_users, start=1):
+        try:
+            await client(EditBannedRequest(chat, user.id, banned_rights))
+            removed += 1
+        except FloodWaitError as e:
+            wait_time = e.seconds + 5
+            try:
+                await event.edit(
+                    f"⏳ FloodWait: {wait_time} soniya kutilmoqda... "
+                    f"({removed}/{len(deleted_users)} chiqarildi)"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(wait_time)
+        except Exception:
+            failed += 1
+        # Har bir akkaunt orasida sekin harakat qilamiz, va har 15 tadan
+        # keyin qo'shimcha uzunroq tanaffus beramiz - bu FloodWait'ga
+        # tushish ehtimolini sezilarli kamaytiradi.
+        await asyncio.sleep(2.5)
+        if i % 15 == 0:
+            await asyncio.sleep(10)
+
+    await event.edit(f"✅ Tugadi.\nChiqarildi: {removed} ta\nXato: {failed} ta")
+
+
+if __name__ == "__main__":
+    with client:
+        client.loop.run_until_complete(main())
