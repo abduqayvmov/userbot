@@ -574,7 +574,8 @@ from telethon.tl.types import InputSavedStarGiftUser
 # Kategoriya: (nom, emojilar, nom ichidagi kalit so'zlar)
 # Yangi kategoriya kerak bo'lsa shu ro'yxatga qo'shib qo'yish kifoya.
 GIFT_CATEGORIES = [
-    ("teddy",     ["🧸", "🐻", "🐼", "🐨", "🐻‍❄️"], ["bear", "teddy", "мишк", "медвед"]),
+    ("teddy",     ["🧸", "🐻", "🐼", "🐨", "🐻‍❄️"],
+                  ["bear", "teddy", "мишк", "медвед", "ayiq"]),
     ("heart",     ["💝", "❤", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎",
                    "💖", "💘", "💕", "💗", "💓", "💞", "💟", "♥", "🫶", "💌"],
                   ["heart", "love", "сердц", "любов"]),
@@ -588,7 +589,7 @@ GIFT_CATEGORIES = [
     ("diamond",   ["💎"], ["diamond", "gem", "алмаз", "брилл"]),
     ("ring",      ["💍"], ["ring", "кольц"]),
     ("trophy",    ["🏆", "🥇", "🥈", "🥉", "🏅", "🎖"], ["trophy", "cup", "award", "кубок"]),
-    ("tree",      ["🎄", "🌲", "🎅", "☃️", "⛄"], ["tree", "christmas", "santa", "елк", "нового"]),
+    ("tree",      ["🎄", "🌲"], ["christmas tree", "елк"]),
     ("star",      ["⭐", "🌟", "✨", "💫", "🌠"], ["star", "звезд"]),
     ("ball",      ["⚽", "🏀", "🏈", "⚾", "🎾", "🏐"], ["ball", "мяч"]),
     ("balloon",   ["🎈"], ["balloon", "шар"]),
@@ -603,6 +604,14 @@ GIFT_CATEGORIES = [
     ("duck",      ["🦆", "🐤", "🐥", "🐣"], ["duck", "утк"]),
     ("frog",      ["🐸"], ["frog", "pepe", "лягуш"]),
 ]
+
+
+# Hadya ID si bo'yicha majburiy kategoriya.
+# .gid buyrug'i ID larni ko'rsatadi; emoji bo'yicha noto'g'ri tushgan
+# hadyani shu yerga yozib qo'yilsa, u doim shu kategoriyada bo'ladi.
+GIFT_ID_OVERRIDES = {
+    # 5170233102089322756: "teddy",
+}
 
 
 async def _fetch_all_saved_gifts():
@@ -657,6 +666,10 @@ def _gift_category(gift):
     emoji = _gift_emoji(gift)
     clean = _clean_emoji(emoji)
     title = (getattr(gift, 'title', None) or '').lower()
+
+    forced = GIFT_ID_OVERRIDES.get(getattr(gift, 'id', None))
+    if forced:
+        return forced, emoji
 
     for name, emojis, keywords in GIFT_CATEGORIES:
         for e in emojis:
@@ -878,6 +891,49 @@ async def list_gift_types(event):
             "📦 Hammasi: `.offgift` / `.ongift`",
         ]
         await event.edit("\n".join(lines))
+    except Exception as e:
+        await event.edit(f"❌ Xatolik: {str(e)}")
+
+
+# 🔎 .gid - har bir hadya turining ID si va qaysi kategoriyaga tushgani
+@client.on(events.NewMessage(pattern=r"^\.(gid|gids)$", outgoing=True))
+async def list_gift_ids(event):
+    await event.edit("🔄 Hadya ID lari yig'ilmoqda...")
+    try:
+        all_gifts = await _fetch_all_saved_gifts()
+        if not all_gifts:
+            return await event.edit("📊 Profilingizda hadyalar topilmadi.")
+
+        seen = {}
+        for sg in all_gifts:
+            gift = getattr(sg, 'gift', None)
+            gid = getattr(gift, 'id', None)
+            if gid in seen:
+                seen[gid]['count'] += 1
+                continue
+            name, emoji = _gift_category(gift)
+            seen[gid] = {
+                'id': gid,
+                'emoji': emoji or '—',
+                'stars': getattr(gift, 'stars', None),
+                'title': (getattr(gift, 'title', None) or '').strip(),
+                'category': name,
+                'count': 1,
+            }
+
+        lines = [f"🔎 **Hadya turlari** — {len(seen)} xil\n"]
+        for i, g in enumerate(seen.values(), start=1):
+            price = f"{g['stars']}⭐" if g['stars'] else ""
+            title = f" {g['title']}" if g['title'] else ""
+            lines.append(
+                f"`{i}.` {g['emoji']}{title} {price} ×{g['count']}\n"
+                f"     `{g['id']}` → `{g['category']}`"
+            )
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3950] + "\n…"
+        await event.edit(text)
     except Exception as e:
         await event.edit(f"❌ Xatolik: {str(e)}")
 
