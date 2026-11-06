@@ -295,10 +295,14 @@ def start_ghost_task():
 
 
 # .ghost on / .ghost off / .ghost - sharpa rejimi
-@client.on(events.NewMessage(pattern=r"^\.(ghost|sharpa|шарпа)(?:\s+(on|off))?$", outgoing=True))
+@client.on(events.NewMessage(pattern=r"(?i)^\.(ghost|sharpa|шарпа)(?:\s+(on|off))?$"))
 async def toggle_ghost_mode(event):
     global ghost_mode
-    action = event.pattern_match.group(2)
+    # Saved Messages'da xabar "outgoing" deb belgilanmasligi mumkin, shuning uchun yuboruvchini tekshiramiz.
+    me = await client.get_me()
+    if not event.out and event.sender_id != me.id:
+        return
+    action = (event.pattern_match.group(2) or "").lower()
     if action:
         ghost_mode = action == "on"
         start_ghost_task()
