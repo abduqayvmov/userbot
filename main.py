@@ -1,6 +1,5 @@
 import os
 import html
-import shutil
 import time
 import sqlite3
 import asyncio
@@ -13,7 +12,6 @@ from flask import Flask
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
-from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.functions.channels import EditAdminRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import ChatAdminRights
@@ -39,10 +37,6 @@ CACHE_DIR = os.getenv(
 )
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_DB_FILE = os.path.join(CACHE_DIR, "message_cache.db")
-GHOST_STATUS_INTERVAL = 30
-# Render'da disk vaqtinchalik: rejim qayta ishga tushganda ham saqlansin desangiz, GHOST_MODE=1 qo'ying.
-ghost_mode = os.getenv("GHOST_MODE", "0") == "1"
-ghost_task = None
 
 # Render kabi vaqtinchalik disk muhitida fayl sessiyasi har deploy'da yo'qoladi,
 # shuning uchun SESSION_STRING mavjud bo'lsa o'shani ishlatamiz (generate_session.py bilan olinadi).
@@ -244,76 +238,6 @@ async def download_to_disk(message):
         return None
 
 
-def is_timed_media(message):
-    """Bir marta ko'riladigan yoki vaqtinchalik media - yuboruvchi saqlanishini xohlamagan."""
-    return bool(getattr(message.media, "ttl_seconds", None))
-
-
-async def mirror_ghost_message(event, media_path):
-    """Sharpa rejimida kiruvchi shaxsiy xabarni log kanalga nusxalaydi. Xabarni
-    kanalda o'qisangiz, asl chat ochilmaydi va yuboruvchiga "o'qildi" bormaydi."""
-    if not ghost_mode or not event.is_private or event.out:
-        return
-    try:
-        sender = await event.get_sender()
-        if getattr(sender, "bot", False):
-            return
-        name = getattr(sender, "first_name", None) or getattr(sender, "title", None)
-        header = f"👻 {mention_html(name, event.sender_id)}"
-        body = html.escape(event.raw_text or "")
-        if is_timed_media(event.message):
-            await asyncio.to_thread(bot_api_send_message, f"{header}\n⏱ Vaqtinchalik media keldi, nusxalanmadi.")
-        elif media_path and os.path.exists(media_path):
-            copy_path = f"{media_path}.ghost"
-            shutil.copyfile(media_path, copy_path)
-            caption = f"{header}\n{body}"[:900]
-            await asyncio.to_thread(send_log_message, caption, copy_path, message_media_kind(event.message))
-        elif body:
-            await asyncio.to_thread(bot_api_send_message, f"{header}\n{body}"[:3900])
-        else:
-            await asyncio.to_thread(bot_api_send_message, f"{header}\n{message_kind_emoji(event.message)} Xabar keldi.")
-    except Exception as e:
-        print(f"Sharpa rejimida nusxalashda xatolik: {e}")
-
-
-async def ghost_status_loop():
-    """Sharpa rejimi yoqiq turganda hisobni muntazam "offline" qilib turadi."""
-    while ghost_mode:
-        try:
-            await client(UpdateStatusRequest(offline=True))
-        except FloodWaitError as e:
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            print(f"Sharpa rejimi holatini yangilashda xatolik: {e}")
-        await asyncio.sleep(GHOST_STATUS_INTERVAL)
-
-
-def start_ghost_task():
-    global ghost_task
-    if ghost_mode and (ghost_task is None or ghost_task.done()):
-        ghost_task = asyncio.create_task(ghost_status_loop())
-
-
-# .ghost on / .ghost off / .ghost - sharpa rejimi
-@client.on(events.NewMessage(pattern=r"(?i)^\.(ghost|sharpa|шарпа)(?:\s+(on|off))?$"))
-async def toggle_ghost_mode(event):
-    global ghost_mode
-    # Saved Messages'da xabar "outgoing" deb belgilanmasligi mumkin, shuning uchun yuboruvchini tekshiramiz.
-    me = await client.get_me()
-    if not event.out and event.sender_id != me.id:
-        return
-    action = (event.pattern_match.group(2) or "").lower()
-    if action:
-        ghost_mode = action == "on"
-        start_ghost_task()
-        if not ghost_mode:
-            await client(UpdateStatusRequest(offline=False))
-    if ghost_mode:
-        await event.edit("👻 Sharpa rejimi yoqiq. Shaxsiy xabarlarni log kanaldan o'qing.")
-    else:
-        await event.edit("Sharpa rejimi o'chiq.")
-
-
 @client.on(events.NewMessage())
 async def cache_messages(event):
     """Shaxsiy va guruh xabarlarini bazaga keshlaydi - anti-delete cheksiz
@@ -321,8 +245,6 @@ async def cache_messages(event):
     media_path = None
     if event.media and is_media_message(event.message):
         media_path = await download_to_disk(event.message)
-
-    await mirror_ghost_message(event, media_path)
 
     cache_message_row(
         chat_id=event.chat_id,
@@ -927,7 +849,6 @@ async def main():
         try:
             await client.start()
             print("Userbot ishga tushdi.")
-            start_ghost_task()
             await client.run_until_disconnected()
         except Exception as e:
             print(f"Telegram ulanishida xatolik: {e}")
