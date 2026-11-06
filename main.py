@@ -619,13 +619,13 @@ GIFT_ID_OVERRIDES = {
     5866352046986232958: "teddy",
     5893356958802511476: "teddy",
     5969796561943660080: "teddy",
-    5801108895304779062: "teddy",
     5935895822435615975: "teddy",
     6026193266406327981: "teddy",
     6046178578163303744: "teddy",  # Telegram'da 🎂 emoji bilan keladi
 
     # --- Yuraklar ---
     5170145012310081615: "heart",  # 💝 15 yulduz
+    5801108895304779062: "heart",  # "I LOVE U" yurak, 50 yulduz
 
     # --- Qolganlari ---
     5170250947678437525: "gift",       # 🎁 sovg'a qutisi, 25 yulduz
