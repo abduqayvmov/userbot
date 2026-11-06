@@ -1006,15 +1006,37 @@ async def show_gift_stickers(event):
         for gid, (gift, cat) in uniq.items():
             stars = getattr(gift, 'stars', None)
             price = f" · {stars}⭐" if stars else ""
+            caption = f"`{gid}` → `{cat}`{price}"
+            path = None
             try:
-                sent = await client.send_file(event.chat_id, gift.sticker)
-                await client.send_message(
-                    event.chat_id,
-                    f"`{gid}` → `{cat}`{price}",
-                    reply_to=sent.id,
-                )
+                # Stikerni to'g'ridan-to'g'ri qayta yuborib bo'lmaydi, shuning
+                # uchun uning rasmini (thumbnail) yuklab olib, foto qilib
+                # yuboramiz - rasm bilan ID yonma-yon ko'rinadi.
+                try:
+                    path = await client.download_media(
+                        gift.sticker, file=os.path.join(CACHE_DIR, f"gift_{gid}"), thumb=-1
+                    )
+                except Exception:
+                    path = None
+                if not path:
+                    path = await client.download_media(
+                        gift.sticker, file=os.path.join(CACHE_DIR, f"gift_{gid}")
+                    )
+
+                if path:
+                    await client.send_file(
+                        event.chat_id, path, caption=caption, force_document=False
+                    )
+                else:
+                    await client.send_message(event.chat_id, caption)
             except Exception as e:
-                await client.send_message(event.chat_id, f"`{gid}` → `{cat}`{price}\n⚠️ {e}")
+                await client.send_message(event.chat_id, f"{caption}\n⚠️ {e}")
+            finally:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
             await asyncio.sleep(0.5)
 
         await event.edit(
