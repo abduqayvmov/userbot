@@ -974,6 +974,47 @@ async def list_gift_ids(event):
         await event.edit(f"❌ Xatolik: {str(e)}")
 
 
+# ❓ .hlp - barcha buyruqlar ro'yxati
+HELP_TEXT = """🤖 **Userbot buyruqlari**
+
+🎁 **Hadyalar**
+`.gifts` — kategoriyalar, soni, ochiq/yashirin holati
+`.gid` — har bir turning ID si, emojisi, narxi
+`.gshow <kat>` — hadyalarni rasmi bilan ko'rsatadi
+`.offgift` — hamma hadyani profildan berkitadi
+`.offgift <kat>` — faqat o'sha kategoriyani berkitadi
+`.ongift` — hamma hadyani qaytaradi
+`.ongift <kat>` — faqat o'sha kategoriyani qaytaradi
+_Kategoriyalar:_ teddy · heart · cake · gift · rose · flower · rocket · champagne · tree · trophy · ring · diamond
+_Misol:_ `.offgift teddy heart` · `.ongift 🧸` · `.offgift 1`
+
+🗑 **O'chirish**
+`.del` — reply qilingan xabarni o'chiradi
+`.delete` — shu chatdagi o'z xabarlaringizni o'chiradi
+
+👮 **Guruh boshqaruvi**
+`.ad <teg>` — reply qilingan odamni admin qiladi, tegi bilan
+`.unad` — adminlikni va tegni olib tashlaydi
+`.odel` — guruhdagi barcha o'chirilgan akkauntlarni chiqaradi
+`.nakrutka` — fake/nakrutka akkauntlarni skanerlaydi
+`.kickfake` — skanerda topilganlarni guruhdan chiqaradi
+
+🔍 **Boshqa**
+`.tek` yoki `.tek @user` — kontakt o'zaro (mutual) yoki yo'qligini tekshiradi
+`.hlp` — shu ro'yxat
+
+⚙️ **Avtomatik ishlaydi**
+• O'chirilgan va tahrirlangan xabarlar log kanalga yoziladi
+• Media'ga reply qilsangiz log kanalga saqlanadi
+
+_Buyruqlar rus harflarida ham ishlaydi: `.дел`, `.ад`, `.одел` ..._"""
+
+
+@client.on(events.NewMessage(pattern=r"^\.(hlp|help|yordam|помощь)$", outgoing=True))
+async def show_help(event):
+    await event.edit(HELP_TEXT, link_preview=False)
+
+
 # 🖼 .gshow <kategoriya> - kategoriyadagi har bir hadya turini rasmi bilan ko'rsatadi
 @client.on(events.NewMessage(pattern=r"^\.(gshow|gko)(?:\s+(.+))?$", outgoing=True))
 async def show_gift_stickers(event):
