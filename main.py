@@ -566,9 +566,43 @@ async def check_mutual_contact(event):
         await event.edit(f"Xatolik: {e}")
 
 
-# .goff / .gon - profildagi StarGift'larni yashirish/qayta ko'rsatish
+# .ongift / .offgift - profildagi hadyalarni KATEGORIYA bo'yicha yoqish/o'chirish
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest, SaveStarGiftRequest
 from telethon.tl.types import InputSavedStarGiftUser
+
+
+# Kategoriya: (nom, emojilar, nom ichidagi kalit so'zlar)
+# Yangi kategoriya kerak bo'lsa shu ro'yxatga qo'shib qo'yish kifoya.
+GIFT_CATEGORIES = [
+    ("teddy",     ["🧸", "🐻", "🐼", "🐨", "🐻‍❄️"], ["bear", "teddy", "мишк", "медвед"]),
+    ("heart",     ["💝", "❤", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎",
+                   "💖", "💘", "💕", "💗", "💓", "💞", "💟", "♥", "🫶", "💌"],
+                  ["heart", "love", "сердц", "любов"]),
+    ("rose",      ["🌹"], ["rose", "роз"]),
+    ("flower",    ["💐", "🌷", "🌸", "🌺", "🌻", "🌼", "🏵", "🪻", "🪷"],
+                  ["flower", "bouquet", "букет", "цвет"]),
+    ("rocket",    ["🚀"], ["rocket", "ракет"]),
+    ("cake",      ["🎂", "🍰", "🧁"], ["cake", "торт"]),
+    ("champagne", ["🍾", "🥂", "🍷", "🍻"], ["champagne", "bottle", "шампан"]),
+    ("gift",      ["🎁"], ["gift box", "present", "подар"]),
+    ("diamond",   ["💎"], ["diamond", "gem", "алмаз", "брилл"]),
+    ("ring",      ["💍"], ["ring", "кольц"]),
+    ("trophy",    ["🏆", "🥇", "🥈", "🥉", "🏅", "🎖"], ["trophy", "cup", "award", "кубок"]),
+    ("tree",      ["🎄", "🌲", "🎅", "☃️", "⛄"], ["tree", "christmas", "santa", "елк", "нового"]),
+    ("star",      ["⭐", "🌟", "✨", "💫", "🌠"], ["star", "звезд"]),
+    ("ball",      ["⚽", "🏀", "🏈", "⚾", "🎾", "🏐"], ["ball", "мяч"]),
+    ("balloon",   ["🎈"], ["balloon", "шар"]),
+    ("candy",     ["🍬", "🍭", "🍫", "🍪", "🍩"], ["candy", "sweet", "конфет"]),
+    ("crown",     ["👑"], ["crown", "корон"]),
+    ("music",     ["🎵", "🎶", "🎸", "🎤", "🎧"], ["music", "guitar", "музык"]),
+    ("car",       ["🚗", "🏎", "🚘"], ["car", "машин", "авто"]),
+    ("cat",       ["🐱", "🐈", "😺", "🙀"], ["cat", "кот", "кош"]),
+    ("dog",       ["🐶", "🐕", "🦮"], ["dog", "пёс", "соба"]),
+    ("fire",      ["🔥"], ["fire", "flame", "огон"]),
+    ("money",     ["💰", "💵", "💸", "🪙"], ["money", "coin", "деньг", "монет"]),
+    ("duck",      ["🦆", "🐤", "🐥", "🐣"], ["duck", "утк"]),
+    ("frog",      ["🐸"], ["frog", "pepe", "лягуш"]),
+]
 
 
 async def _fetch_all_saved_gifts():
@@ -591,71 +625,275 @@ async def _fetch_all_saved_gifts():
     return all_gifts
 
 
-# 1. 🙈 NECHTA BO'LSA BARCHASINI profildan yashirish buyrug'i: .goff
-@client.on(events.NewMessage(pattern=r"^\.goff$", outgoing=True))
-async def hide_all_gifts(event):
-    await event.edit("🔄 Barcha hadyalar ro'yxati yuklanmoqda, kuting...")
+def _clean_emoji(text):
+    """Variation selector va boshqa ko'rinmas belgilarni olib tashlaydi."""
+    return (text or '').replace('️', '').replace('‍', '').strip()
 
+
+def _doc_alt_emoji(doc):
+    """Document (stiker) atributlaridan emoji (alt) ni oladi."""
+    for attr in (getattr(doc, 'attributes', None) or []):
+        alt = getattr(attr, 'alt', None)
+        if alt:
+            return alt
+    return ''
+
+
+def _gift_emoji(gift):
+    """Hadya stikeridagi emojini qaytaradi (🧸, 🚀, 🌹, 🎂 ...)."""
+    emoji = _doc_alt_emoji(getattr(gift, 'sticker', None))
+    if emoji:
+        return emoji
+    # Unique (upgrade qilingan) hadyalarda stiker attributes ichida bo'ladi
+    for attr in (getattr(gift, 'attributes', None) or []):
+        emoji = _doc_alt_emoji(getattr(attr, 'document', None))
+        if emoji:
+            return emoji
+    return ''
+
+
+def _gift_category(gift):
+    """Hadya qaysi kategoriyaga tegishli: ('teddy', '🧸') ko'rinishida."""
+    emoji = _gift_emoji(gift)
+    clean = _clean_emoji(emoji)
+    title = (getattr(gift, 'title', None) or '').lower()
+
+    for name, emojis, keywords in GIFT_CATEGORIES:
+        for e in emojis:
+            ce = _clean_emoji(e)
+            if ce and clean and (clean == ce or ce in clean or clean in ce):
+                return name, emoji
+        for kw in keywords:
+            if kw and kw in title:
+                return name, emoji
+
+    # Kategoriya topilmasa emojining o'zi kategoriya bo'ladi
+    return (emoji or f"id{getattr(gift, 'id', '?')}"), emoji
+
+
+def _group_gifts(all_gifts):
+    """Hadyalarni kategoriyalarga ajratadi. Tartib: profildagi kelish tartibi."""
+    groups = {}
+    for sg in all_gifts:
+        gift = getattr(sg, 'gift', None)
+        name, emoji = _gift_category(gift)
+        g = groups.setdefault(name, {
+            'name': name,
+            'emojis': [],
+            'items': [],
+            'gift_ids': set(),
+        })
+        g['items'].append(sg)
+        if emoji and emoji not in g['emojis']:
+            g['emojis'].append(emoji)
+        gift_id = getattr(gift, 'id', None)
+        if gift_id is not None:
+            g['gift_ids'].add(gift_id)
+    return list(groups.values())
+
+
+def _group_label(group):
+    emojis = ''.join(group['emojis'][:3])
+    return f"{emojis} {group['name']}".strip()
+
+
+def _hidden_shown_counts(group):
+    hidden = sum(1 for sg in group['items'] if getattr(sg, 'unsaved', False))
+    return hidden, len(group['items']) - hidden
+
+
+def _select_groups(ordered, raw_args):
+    """Argumentlar bo'yicha kategoriyalarni tanlaydi.
+
+    Qo'llab-quvvatlanadi: nom (.offgift teddy), emoji (.offgift 🧸),
+    ro'yxatdagi raqam (.offgift 1), bir nechtasi probel/vergul bilan.
+    Bo'sh bo'lsa -> hammasi.
+    """
+    if not raw_args or not raw_args.strip():
+        return ordered, []
+
+    tokens = [t for t in raw_args.replace(',', ' ').split() if t.strip()]
+    if any(t.lower() in ('all', 'hammasi', 'barchasi', 'все', '*') for t in tokens):
+        return ordered, []
+
+    selected, unknown = [], []
+    for token in tokens:
+        t = token.strip()
+        tl = t.lower()
+        matched = []
+
+        # 1) Ro'yxatdagi tartib raqami
+        if t.isdigit() and 1 <= int(t) <= len(ordered):
+            matched = [ordered[int(t) - 1]]
+
+        # 2) Kategoriya nomi
+        if not matched:
+            matched = [g for g in ordered if g['name'].lower() == tl]
+
+        # 3) Emoji
+        if not matched:
+            ct = _clean_emoji(t)
+            if ct:
+                matched = [g for g in ordered
+                           if any(_clean_emoji(e) == ct for e in g['emojis'])]
+
+        # 4) Nom bo'lagi
+        if not matched:
+            matched = [g for g in ordered if tl in g['name'].lower()]
+
+        if not matched:
+            unknown.append(t)
+        for g in matched:
+            if g not in selected:
+                selected.append(g)
+
+    return selected, unknown
+
+
+async def _apply_gift_visibility(event, groups, unsave):
+    """Tanlangan kategoriyalardagi hadyalarni yashiradi (unsave=True) yoki ko'rsatadi."""
+    targets = [
+        sg for g in groups for sg in g['items']
+        if bool(getattr(sg, 'unsaved', False)) != unsave and getattr(sg, 'msg_id', None)
+    ]
+
+    if not targets:
+        if unsave:
+            return await event.edit("📊 **Natija:** Tanlangan hadyalar allaqachon yashirilgan.")
+        return await event.edit("📊 **Natija:** Tanlangan hadyalar allaqachon ochiq turibdi.")
+
+    names = ', '.join(_group_label(g) for g in groups[:6])
+    if len(groups) > 6:
+        names += f" va yana {len(groups) - 6} ta"
+    action = "berkitilmoqda" if unsave else "qaytarilmoqda"
+    await event.edit(f"📦 {names}\n🔄 {len(targets)} ta hadya {action}...")
+
+    done, failed = 0, 0
+    for i, sg in enumerate(targets, start=1):
+        try:
+            await client(SaveStarGiftRequest(
+                stargift=InputSavedStarGiftUser(msg_id=sg.msg_id),
+                unsave=unsave,
+            ))
+            done += 1
+        except FloodWaitError as e:
+            wait_time = e.seconds + 5
+            try:
+                await event.edit(f"⏳ FloodWait: {wait_time} soniya kutilmoqda... ({done}/{len(targets)})")
+            except Exception:
+                pass
+            await asyncio.sleep(wait_time)
+            try:
+                await client(SaveStarGiftRequest(
+                    stargift=InputSavedStarGiftUser(msg_id=sg.msg_id),
+                    unsave=unsave,
+                ))
+                done += 1
+            except Exception:
+                failed += 1
+        except Exception:
+            failed += 1
+
+        if i % 10 == 0 and i < len(targets):
+            try:
+                await event.edit(f"🔄 {i}/{len(targets)} ta hadya {action}...")
+            except Exception:
+                pass
+        await asyncio.sleep(1.5)  # Telegram blokiga tushmaslik uchun
+
+    icon = "🙈" if unsave else "🎉"
+    verb = "berkitildi" if unsave else "profilda qayta ko'rinadigan qilindi"
+    text = f"✅ **Tayyor!**\n{icon} `{done}` ta hadya {verb}."
+    if failed:
+        text += f"\n⚠️ Xato: `{failed}` ta."
+    await event.edit(text)
+
+
+async def _handle_gift_command(event, unsave, raw_args):
+    await event.edit("🔄 Hadyalar ro'yxati yuklanmoqda, kuting...")
     try:
         all_gifts = await _fetch_all_saved_gifts()
-
         if not all_gifts:
-            await event.edit("📊 **Natija:** Profilingizda umuman hadyalar topilmadi.")
-            return
+            return await event.edit("📊 **Natija:** Profilingizda hadyalar topilmadi.")
 
-        await event.edit(f"📦 Jami {len(all_gifts)} ta hadya topildi. Profildan berkitish boshlandi...")
-        hidden_count = 0
+        ordered = _group_gifts(all_gifts)
+        selected, unknown = _select_groups(ordered, raw_args)
 
-        # 🔐 Topilgan barcha hadyalarni bittalab yashirib chiqamiz
-        for saved_gift in all_gifts:
-            if getattr(saved_gift, 'unsaved', False) == False and saved_gift.msg_id:
-                await client(SaveStarGiftRequest(
-                    stargift=InputSavedStarGiftUser(msg_id=saved_gift.msg_id),
-                    unsave=True,
-                ))
-                hidden_count += 1
-                await asyncio.sleep(1.5)  # Telegram blokiga tushmaslik uchun 1.5 soniya kutish xavfsizroq
+        if not selected:
+            cmd = ".offgift" if unsave else ".ongift"
+            lines = [f"❌ Bunday kategoriya yo'q: {', '.join(unknown)}", "", "Mavjudlari:"]
+            for idx, g in enumerate(ordered, start=1):
+                lines.append(f"`{idx}.` {_group_label(g)} — {len(g['items'])} ta")
+            lines.append(f"\nMasalan: `{cmd} {ordered[0]['name']}`")
+            return await event.edit("\n".join(lines))
 
-        if hidden_count == 0:
-            await event.edit("📊 **Natija:** Profilingizdagi barcha hadyalar allaqachon yashirib bo'lingan.")
-        else:
-            await event.edit(f"✅ **Muvaffaqiyatli yakunlandi!**\n📦 Profilingizdagi jami `{hidden_count}` ta hadya mutloq berkitildi.")
+        await _apply_gift_visibility(event, selected, unsave)
+
+        if unknown:
+            try:
+                await event.reply(f"⚠️ Tanilmagan kategoriya: {', '.join(unknown)}")
+            except Exception:
+                pass
 
     except Exception as e:
-        await event.edit(f"❌ Hadyalarni yashirishda xatolik yuz berdi: {str(e)}")
+        action = "yashirishda" if unsave else "yoqishda"
+        await event.edit(f"❌ Hadyalarni {action} xatolik yuz berdi: {str(e)}")
 
 
-# 2. 🐵 BARCHA yashirilgan hadyalarni profilda qayta ko'rsatish buyrug'i: .gon
-@client.on(events.NewMessage(pattern=r"^\.gon$", outgoing=True))
-async def show_all_gifts(event):
-    await event.edit("🔄 Barcha yashirilgan hadyalar ro'yxati yuklanmoqda...")
-
+# 📋 .gifts - profildagi hadya kategoriyalari ro'yxati
+@client.on(events.NewMessage(pattern=r"^\.(gifts|glist|hadyalar)$", outgoing=True))
+async def list_gift_types(event):
+    await event.edit("🔄 Hadyalar sanalmoqda...")
     try:
         all_gifts = await _fetch_all_saved_gifts()
-
         if not all_gifts:
-            await event.edit("📊 **Natija:** Profilingizda hadyalar mavjud emas.")
-            return
+            return await event.edit("📊 Profilingizda hadyalar topilmadi.")
 
-        await event.edit(f"📦 Jami {len(all_gifts)} ta hadya topildi. Profilga qaytarish boshlandi...")
-        shown_count = 0
+        ordered = _group_gifts(all_gifts)
+        total_hidden = sum(_hidden_shown_counts(g)[0] for g in ordered)
 
-        for saved_gift in all_gifts:
-            if getattr(saved_gift, 'unsaved', False) == True and saved_gift.msg_id:
-                await client(SaveStarGiftRequest(
-                    stargift=InputSavedStarGiftUser(msg_id=saved_gift.msg_id),
-                    unsave=False,
-                ))
-                shown_count += 1
-                await asyncio.sleep(1.5)
+        lines = [
+            f"🎁 **Hadya kategoriyalari** — jami `{len(all_gifts)}` ta "
+            f"(👁 {len(all_gifts) - total_hidden} ochiq · 🙈 {total_hidden} yashirin)",
+            "",
+        ]
+        for idx, g in enumerate(ordered, start=1):
+            hidden, shown = _hidden_shown_counts(g)
+            state = []
+            if shown:
+                state.append(f"👁 {shown}")
+            if hidden:
+                state.append(f"🙈 {hidden}")
+            kinds = len(g['gift_ids'])
+            extra = f", {kinds} xil" if kinds > 1 else ""
+            lines.append(
+                f"`{idx}.` {_group_label(g)} — {len(g['items'])} ta{extra} ({' · '.join(state)})"
+            )
 
-        if shown_count == 0:
-            await event.edit("📊 **Natija:** Profilingizda yashirilgan hadyalar topilmadi (hammasi ochiq turibdi).")
-        else:
-            await event.edit(f"✅ **Muvaffaqiyatli yakunlandi!**\n🎉 Jami `{shown_count}` ta hadya profilingizda qayta ko'rinadigan qilindi.")
-
+        first = ordered[0]['name']
+        lines += [
+            "",
+            f"🙈 O'chirish: `.offgift {first}` · `.offgift teddy heart`",
+            f"👁 Yoqish: `.ongift {first}`",
+            "📦 Hammasi: `.offgift` / `.ongift`",
+        ]
+        await event.edit("\n".join(lines))
     except Exception as e:
-        await event.edit(f"❌ Hadyalarni yoqishda xatolik: {str(e)}")
+        await event.edit(f"❌ Xatolik: {str(e)}")
+
+
+# 🙈 .offgift [kategoriya] - hadyalarni profildan yashirish (argumentsiz = hammasi)
+@client.on(events.NewMessage(
+    pattern=r"^\.(offgift|goff|оффгифт|гофф)(?:\s+(.+))?$", outgoing=True))
+async def hide_gifts(event):
+    await _handle_gift_command(event, unsave=True, raw_args=event.pattern_match.group(2) or "")
+
+
+# 👁 .ongift [kategoriya] - hadyalarni profilda qayta ko'rsatish (argumentsiz = hammasi)
+@client.on(events.NewMessage(
+    pattern=r"^\.(ongift|gon|онгифт|гон)(?:\s+(.+))?$", outgoing=True))
+async def show_gifts(event):
+    await _handle_gift_command(event, unsave=False, raw_args=event.pattern_match.group(2) or "")
 
 
 # ============================================================
