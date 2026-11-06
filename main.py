@@ -622,6 +622,7 @@ GIFT_ID_OVERRIDES = {
     5801108895304779062: "teddy",
     5935895822435615975: "teddy",
     6026193266406327981: "teddy",
+    6046178578163303744: "teddy",  # Telegram'da 🎂 emoji bilan keladi
 
     # --- Yuraklar ---
     5170145012310081615: "heart",  # 💝 15 yulduz
@@ -633,7 +634,6 @@ GIFT_ID_OVERRIDES = {
     5170564780938756245: "rocket",     # 🚀 50 yulduz
     6028601630662853006: "champagne",  # 🍾 50 yulduz
     5170144170496491616: "cake",       # 🎂 50 yulduz
-    6046178578163303744: "cake",       # 🎂 50 yulduz (ikkinchi tur)
     5922558454332916696: "tree",       # 🎄 50 yulduz
     5168043875654172773: "trophy",     # 🏆 100 yulduz
     5170690322832818290: "ring",       # 💍 100 yulduz
@@ -970,6 +970,57 @@ async def list_gift_ids(event):
         if len(text) > 4000:
             text = text[:3950] + "\n…"
         await event.edit(text)
+    except Exception as e:
+        await event.edit(f"❌ Xatolik: {str(e)}")
+
+
+# 🖼 .gshow <kategoriya> - kategoriyadagi har bir hadya turini rasmi bilan ko'rsatadi
+@client.on(events.NewMessage(pattern=r"^\.(gshow|gko)(?:\s+(.+))?$", outgoing=True))
+async def show_gift_stickers(event):
+    arg = (event.pattern_match.group(2) or "").strip()
+    if not arg:
+        return await event.edit("Qaysi kategoriya? Masalan: `.gshow teddy`")
+
+    await event.edit("🔄 Yuklanmoqda...")
+    try:
+        all_gifts = await _fetch_all_saved_gifts()
+        if not all_gifts:
+            return await event.edit("📊 Hadyalar topilmadi.")
+
+        ordered = _group_gifts(all_gifts)
+        selected, unknown = _select_groups(ordered, arg)
+        if not selected:
+            return await event.edit(f"❌ Bunday kategoriya yo'q: {', '.join(unknown)}")
+
+        # Har bir turdan bittadan
+        uniq = {}
+        for g in selected:
+            for sg in g['items']:
+                gift = getattr(sg, 'gift', None)
+                gid = getattr(gift, 'id', None)
+                if gid not in uniq:
+                    uniq[gid] = (gift, g['name'])
+
+        await event.edit(f"🖼 `{len(uniq)}` xil topildi, yuborilmoqda...")
+
+        for gid, (gift, cat) in uniq.items():
+            stars = getattr(gift, 'stars', None)
+            price = f" · {stars}⭐" if stars else ""
+            try:
+                sent = await client.send_file(event.chat_id, gift.sticker)
+                await client.send_message(
+                    event.chat_id,
+                    f"`{gid}` → `{cat}`{price}",
+                    reply_to=sent.id,
+                )
+            except Exception as e:
+                await client.send_message(event.chat_id, f"`{gid}` → `{cat}`{price}\n⚠️ {e}")
+            await asyncio.sleep(0.5)
+
+        await event.edit(
+            f"✅ `{len(uniq)}` xil ko'rsatildi.\n"
+            "Keraksizini `.delete` bilan tozalashingiz mumkin."
+        )
     except Exception as e:
         await event.edit(f"❌ Xatolik: {str(e)}")
 
