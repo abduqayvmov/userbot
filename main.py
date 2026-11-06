@@ -610,7 +610,34 @@ GIFT_CATEGORIES = [
 # .gid buyrug'i ID larni ko'rsatadi; emoji bo'yicha noto'g'ri tushgan
 # hadyani shu yerga yozib qo'yilsa, u doim shu kategoriyada bo'ladi.
 GIFT_ID_OVERRIDES = {
-    # 5170233102089322756: "teddy",
+    # --- Ayiqchalar (10 xil) ---
+    5170233102089322756: "teddy",  # oddiy ayiqcha, 15 yulduz
+    5974210632977745012: "teddy",  # 🧸 50 yulduz
+    # Quyidagilar Telegram'da 🎁 emoji bilan keladi, lekin aslida ayiqchalar
+    5956217000635139069: "teddy",
+    5800655655995968830: "teddy",
+    5866352046986232958: "teddy",
+    5893356958802511476: "teddy",
+    5969796561943660080: "teddy",
+    5801108895304779062: "teddy",
+    5935895822435615975: "teddy",
+    6026193266406327981: "teddy",
+
+    # --- Yuraklar ---
+    5170145012310081615: "heart",  # 💝 15 yulduz
+
+    # --- Qolganlari ---
+    5170250947678437525: "gift",       # 🎁 sovg'a qutisi, 25 yulduz
+    5168103777563050263: "rose",       # 🌹 25 yulduz
+    5170314324215857265: "flower",     # 💐 guldasta, 50 yulduz
+    5170564780938756245: "rocket",     # 🚀 50 yulduz
+    6028601630662853006: "champagne",  # 🍾 50 yulduz
+    5170144170496491616: "cake",       # 🎂 50 yulduz
+    6046178578163303744: "cake",       # 🎂 50 yulduz (ikkinchi tur)
+    5922558454332916696: "tree",       # 🎄 50 yulduz
+    5168043875654172773: "trophy",     # 🏆 100 yulduz
+    5170690322832818290: "ring",       # 💍 100 yulduz
+    5170521118301225164: "diamond",    # 💎 100 yulduz
 }
 
 
@@ -910,6 +937,8 @@ async def list_gift_ids(event):
             gid = getattr(gift, 'id', None)
             if gid in seen:
                 seen[gid]['count'] += 1
+                if getattr(sg, 'unsaved', False):
+                    seen[gid]['hidden'] += 1
                 continue
             name, emoji = _gift_category(gift)
             seen[gid] = {
@@ -919,14 +948,21 @@ async def list_gift_ids(event):
                 'title': (getattr(gift, 'title', None) or '').strip(),
                 'category': name,
                 'count': 1,
+                'hidden': 1 if getattr(sg, 'unsaved', False) else 0,
             }
 
         lines = [f"🔎 **Hadya turlari** — {len(seen)} xil\n"]
         for i, g in enumerate(seen.values(), start=1):
             price = f"{g['stars']}⭐" if g['stars'] else ""
             title = f" {g['title']}" if g['title'] else ""
+            if g['hidden'] == g['count']:
+                state = "🙈"
+            elif g['hidden']:
+                state = f"🙈{g['hidden']}/{g['count']}"
+            else:
+                state = "👁"
             lines.append(
-                f"`{i}.` {g['emoji']}{title} {price} ×{g['count']}\n"
+                f"`{i}.` {state} {g['emoji']}{title} {price} ×{g['count']}\n"
                 f"     `{g['id']}` → `{g['category']}`"
             )
 
